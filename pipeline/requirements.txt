@@ -1,28 +1,24 @@
 # Robin API — Python dependencies
-# Install: pip install -r requirements.txt --break-system-packages
 
-# API framework
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-python-multipart==0.0.9   # for Form() and File() in FastAPI
+# API framework — pinned to versions known to work with UploadFile Optional
+fastapi==0.103.2
+uvicorn[standard]==0.23.2
+python-multipart==0.0.6
 
 # Rate limiting
 slowapi==0.1.9
 
 # Database
-psycopg2-binary==2.9.9    # swap for psycopg2 in prod (needs libpq-dev)
+psycopg2-binary==2.9.9
 
-# HTTP client (LLM calls, MRF fetching, FAP fetching)
-httpx==0.27.2
+# HTTP client
+httpx==0.25.0
 
-# PDF rendering (negotiation letters)
+# PDF rendering
 reportlab==4.2.2
 
-# PDF text extraction (FAP parsing)
+# PDF text extraction
 pypdf==4.3.1
 
-# HTML parsing (FAP web page parsing)
+# HTML parsing
 beautifulsoup4==4.12.3
-
-# Cryptography (storage key generation)
-# (stdlib hashlib covers sha256 — no extra dep needed)
