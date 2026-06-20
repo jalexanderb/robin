@@ -230,7 +230,7 @@ def _complete_openai_compatible(
     # Log the full response for debugging (truncated to 500 chars)
     import logging
     logging.getLogger("robinhealth.llm").info(
-        "LLM raw response: %s", str(data)[:500]
+        "LLM raw response: %s", str(data)[:2000]
     )
     content_raw = data["choices"][0]["message"]["content"]
     # Some models return None content when they only emit tool_calls
@@ -337,10 +337,26 @@ def complete_json(prompt: str, **kwargs) -> dict | list:
             lines = lines[:-1]
         text = "\n".join(lines)
 
-    # Find the first { or [ and parse from there
-    # This handles any remaining preamble the model adds despite instructions
-    match = re.search(r"[\[{]", text)
-    if match:
-        text = text[match.start():]
+    # Try to find valid JSON by scanning from the last { or [
+    # Reasoning models often write prose first then JSON at the end
+    # Try last occurrence first (most likely to be the actual JSON output)
+    for start_char in ["{", "["]:
+        last_pos = text.rfind(start_char)
+        if last_pos != -1:
+            candidate = text[last_pos:]
+            try:
+                return json.loads(candidate.strip())
+            except (json.JSONDecodeError, ValueError):
+                pass
 
+    # Fall back to first occurrence
+    match = re.search(r"[\\[{]", text)
+    if match:
+        candidate = text[match.start():]
+        try:
+            return json.loads(candidate.strip())
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Last resort: try the whole text
     return json.loads(text.strip())
