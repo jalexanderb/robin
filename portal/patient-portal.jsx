@@ -15,7 +15,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 
 // API base URL -- set VITE_API_BASE (Vite) or REACT_APP_API_BASE (CRA)
 // to point at the Robin FastAPI backend. Falls back to localhost for dev.
-const API_BASE = (
+const API_BASE = "https://robin-production-542a.up.railway.app";
   (typeof import_meta_env !== "undefined" && import_meta_env.VITE_API_BASE) ||
   (typeof process !== "undefined" && process.env?.REACT_APP_API_BASE) ||
   "http://localhost:8001"
