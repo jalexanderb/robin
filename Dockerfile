@@ -21,4 +21,7 @@ EXPOSE 8001
 
 # Default: run the API server.
 # Override in docker-compose for the worker: command: python pipeline/worker.py
-CMD ["uvicorn", "pipeline.api:app", "--host", "0.0.0.0", "--port", "8001"]
+WORKDIR /app/pipeline
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8001"]
+
+
