@@ -265,18 +265,21 @@ def health() -> JSONResponse:
 @app.post("/intake")
 @limiter.limit(f"{_RATE_LIMIT_PER_MINUTE}/minute")
 @limiter.limit(f"{_RATE_LIMIT_PER_DAY}/day")
-async def intake(
-    request: Request,
-    bill_document: UploadFile = File(...),
-    household_income: Optional[float] = Form(None),
-    household_size: Optional[int] = Form(None),
-    state: Optional[str] = Form(None),
-    locality: Optional[str] = Form(None),
-):
+async def intake(request: Request):
     # EOB document is read from form data manually to avoid FastAPI
     # UploadFile Optional type annotation issues across versions
     eob_file = (await request.form()).get("eob_document")
     request_id = getattr(request.state, "request_id", "-")
+
+    # Parse all fields from the raw multipart form
+    form = await request.form()
+    bill_document = form.get("bill_document")
+    household_income_raw = form.get("household_income")
+    household_size_raw = form.get("household_size")
+    state = form.get("state") or None
+    locality = form.get("locality") or None
+    household_income = float(household_income_raw) if household_income_raw else None
+    household_size = int(household_size_raw) if household_size_raw else None
 
     # Auth
     _check_auth(request)
