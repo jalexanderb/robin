@@ -1,0 +1,158 @@
+# Robin full-stack docker-compose
+#
+# Starts three services:
+#   postgres  — Postgres 16, data persisted in a named volume
+#   api       — FastAPI backend (uvicorn), hot-reloads from ./pipeline/
+#   ollama    — Local LLM server (Ollama), models persisted in a named volume
+#
+# Quick start (first time):
+#   1. cp .env.example .env          # copy and edit settings
+#   2. docker compose up -d          # start everything
+#   3. docker compose exec api python seed_health_systems.py  # seed hospital data
+#   4. ollama pull qwen2.5vl:7b      # pull the recommended model (or set LLM_MODEL)
+#
+# Quick start (subsequent runs):
+#   docker compose up -d
+#
+# GPU acceleration (Ollama):
+#   Uncomment the `deploy: resources:` block under the ollama service if you
+#   have an NVIDIA GPU. For Apple Silicon, Ollama runs natively — use the
+#   macOS Ollama app instead and point LLM_BASE_URL at the host machine:
+#     LLM_BASE_URL=http://host.docker.internal:11434/v1
+#
+# Switching to a hosted model instead of Ollama:
+#   Set LLM_PROVIDER=openai_compatible and LLM_BASE_URL to your provider's
+#   endpoint. See .env.example for examples. The `ollama` service can be
+#   removed or commented out when not needed.
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: robin
+      POSTGRES_USER: robin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-robin_dev_password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Run schema migrations on first start
+      - ./pipeline/db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./pipeline/db/bills_schema.sql:/docker-entrypoint-initdb.d/02_bills_schema.sql:ro
+      - ./pipeline/db/jobs_schema.sql:/docker-entrypoint-initdb.d/03_jobs_schema.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U robin -d robin"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    environment:
+      # Database
+      DATABASE_URL: postgresql://robin:${POSTGRES_PASSWORD:-robin_dev_password}@postgres:5432/robin
+      DB_POOL_MIN_CONN: 2
+      DB_POOL_MAX_CONN: 10
+
+      # LLM — defaults to local Ollama. See .env.example to switch providers.
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://ollama:11434/v1}
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5vl:7b}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+
+      # API auth (optional — leave unset for open access in dev)
+      API_KEY: ${API_KEY:-}
+
+      # CORS — set to your frontend origin in production
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+
+      # Rate limiting
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-20}
+      RATE_LIMIT_PER_DAY: ${RATE_LIMIT_PER_DAY:-200}
+
+      # Email delivery (optional — leave unset to skip email sending)
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-advocacy@robinhealth.com}
+
+      # Physical mail / fax (optional)
+      LOB_API_KEY: ${LOB_API_KEY:-}
+
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+    volumes:
+      - ./pipeline:/app/pipeline:ro   # hot-reload in dev; remove :ro in prod
+      - robin_storage:/app/storage    # bill PDFs and generated letters
+    ports:
+      - "8001:8001"
+    command: uvicorn pipeline.api:app --host 0.0.0.0 --port 8001 --reload
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8001/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Background job worker (FAP parsing, MRF fetching)
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql://robin:${POSTGRES_PASSWORD:-robin_dev_password}@postgres:5432/robin
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://ollama:11434/v1}
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5vl:7b}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ./pipeline:/app/pipeline:ro
+    # Poll for jobs every 5 seconds; adjust WORKER_POLL_INTERVAL as needed
+    command: >
+      sh -c "while true; do
+        python /app/pipeline/worker.py --run-once 2>&1;
+        sleep ${WORKER_POLL_INTERVAL:-5};
+      done"
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama_models:/root/.ollama
+    ports:
+      - "11434:11434"
+    # Uncomment for NVIDIA GPU acceleration:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    #
+    # For Apple Silicon: use the macOS Ollama app instead.
+    # Set LLM_BASE_URL=http://host.docker.internal:11434/v1 in .env
+    # and remove this service entirely.
+
+volumes:
+  postgres_data:
+  ollama_models:
+  robin_storage:

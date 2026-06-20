@@ -1,0 +1,46 @@
+# ── Secrets (NEVER commit these) ─────────────────────────────────────────
+.env
+*.env
+.env.local
+.env.production
+
+# ── Python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# ── Node / React (portal frontend) ───────────────────────────────────────
+node_modules/
+.next/
+out/
+dist/
+.cache/
+
+# ── Local storage (bill PDFs, generated letters) ─────────────────────────
+storage/
+*.pdf
+
+# ── macOS ─────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ── Editors ───────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Docker ────────────────────────────────────────────────────────────────
+docker-compose.override.yml
+
+# ── Logs ─────────────────────────────────────────────────────────────────
+*.log
+logs/
