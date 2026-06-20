@@ -201,15 +201,21 @@ def _complete_openai_compatible(
     if _api_key():
         headers["Authorization"] = f"Bearer {_api_key()}"
 
+    # Add a system message forcing JSON output for complete_json calls
+    # This is set by the caller via the _force_json kwarg (internal use)
+    force_json = kwargs.pop("_force_json", False) if "kwargs" in dir() else False
+
+    body: dict = {
+        "model": _model(),
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+
     response = httpx.post(
         f"{_base_url()}/chat/completions",
         headers=headers,
-        json={
-            "model": _model(),
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-        },
+        json=body,
         timeout=120.0,
     )
     response.raise_for_status()
@@ -292,15 +298,29 @@ def _complete_anthropic(
 
 def complete_json(prompt: str, **kwargs) -> dict | list:
     """
-    Like complete(), but parses the response as JSON -- stripping
-    ```json fences and <think>...</think> blocks that reasoning models
-    (Qwen3.7, DeepSeek R1, etc.) emit before the actual JSON output.
+    Like complete(), but forces JSON output by:
+    1. Adding an explicit system message telling the model to output JSON only
+    2. Stripping <think>...</think> blocks from reasoning models
+    3. Stripping ```json fences
+    4. Finding the first { or [ and parsing from there
     """
     import re
+
+    # Inject a system message that forces JSON-only output.
+    # This overrides any existing system kwarg.
+    json_system = (
+        "You are a data extraction assistant. "
+        "You MUST respond with valid JSON only. "
+        "Do not include any explanation, markdown, code fences, "
+        "or text before or after the JSON. "
+        "Output ONLY the raw JSON object or array."
+    )
+    existing_system = kwargs.get("system", "")
+    kwargs["system"] = (json_system + " " + existing_system).strip()
+
     text = complete(prompt, **kwargs).strip()
 
-    # Strip <think>...</think> blocks (Qwen3.7 Plus and other reasoning
-    # models emit these before the actual response content)
+    # Strip <think>...</think> blocks (Qwen3.7 Plus, DeepSeek R1, etc.)
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
     # Strip ```json / ``` fences
@@ -310,8 +330,8 @@ def complete_json(prompt: str, **kwargs) -> dict | list:
             lines = lines[:-1]
         text = "\n".join(lines)
 
-    # Find the first { or [ and parse from there -- handles any remaining
-    # preamble text before the JSON object
+    # Find the first { or [ and parse from there
+    # This handles any remaining preamble the model adds despite instructions
     match = re.search(r"[\[{]", text)
     if match:
         text = text[match.start():]
