@@ -212,6 +212,13 @@ def _complete_openai_compatible(
         "temperature": temperature,
     }
 
+    # Disable thinking mode for Qwen3.7 Plus and similar hybrid reasoning
+    # models -- when thinking is enabled they narrate rather than output JSON.
+    # This is a Fireworks/Qwen3 extension to the OpenAI-compatible API.
+    model_name = _model().lower()
+    if "qwen3" in model_name or "qwq" in model_name or "deepseek-r" in model_name:
+        body["thinking"] = {"type": "disabled"}
+
     response = httpx.post(
         f"{_base_url()}/chat/completions",
         headers=headers,
