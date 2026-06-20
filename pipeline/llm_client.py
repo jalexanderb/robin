@@ -277,24 +277,27 @@ def _complete_anthropic(
 def complete_json(prompt: str, **kwargs) -> dict | list:
     """
     Like complete(), but parses the response as JSON -- stripping
-    ```json fences models sometimes wrap responses in even when
-    explicitly asked for raw JSON (Claude does this too; it's not an
-    open-model-specific quirk).
+    ```json fences and <think>...</think> blocks that reasoning models
+    (Qwen3.7, DeepSeek R1, etc.) emit before the actual JSON output.
     """
+    import re
     text = complete(prompt, **kwargs).strip()
+
+    # Strip <think>...</think> blocks (Qwen3.7 Plus and other reasoning
+    # models emit these before the actual response content)
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
+    # Strip ```json / ``` fences
     if text.startswith("```"):
-        # List slicing, not .split("\n", 1)[1] -- a degenerate response
-        # that's just an opening fence with no newline at all (realistic
-        # if generation gets cut off almost immediately) made the old
-        # version crash with IndexError, which api.py's exception
-        # handling for "the LLM response couldn't be parsed" doesn't
-        # catch (it isn't a KeyError/TypeError/ValueError). Slicing past
-        # the end of a list never raises -- it just yields an empty
-        # list -- so any malformed/truncated response now falls through
-        # to json.loads below, which raises a clean JSONDecodeError (a
-        # ValueError subclass) instead.
-        lines = text.split("\n")[1:]  # drop the opening fence line
+        lines = text.split("\n")[1:]
         if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]  # drop the closing fence line, if present
+            lines = lines[:-1]
         text = "\n".join(lines)
+
+    # Find the first { or [ and parse from there -- handles any remaining
+    # preamble text before the JSON object
+    match = re.search(r"[\[{]", text)
+    if match:
+        text = text[match.start():]
+
     return json.loads(text.strip())
