@@ -11,8 +11,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pipeline/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# App code (mounted as volume in dev; copied in prod)
+# App code
 COPY pipeline/ ./pipeline/
+COPY db/ ./db/
 
 # Storage directory for bill PDFs and generated letters
 RUN mkdir -p /app/storage
