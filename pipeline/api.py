@@ -262,18 +262,20 @@ def health() -> JSONResponse:
     )
 
 
-@app.post("/intake", response_model=None)
+@app.post("/intake")
 @limiter.limit(f"{_RATE_LIMIT_PER_MINUTE}/minute")
 @limiter.limit(f"{_RATE_LIMIT_PER_DAY}/day")
 async def intake(
     request: Request,
     bill_document: UploadFile = File(...),
-    eob_document: Optional[UploadFile] = File(None),
     household_income: Optional[float] = Form(None),
     household_size: Optional[int] = Form(None),
     state: Optional[str] = Form(None),
     locality: Optional[str] = Form(None),
 ):
+    # EOB document is read from form data manually to avoid FastAPI
+    # UploadFile Optional type annotation issues across versions
+    eob_file = (await request.form()).get("eob_document")
     request_id = getattr(request.state, "request_id", "-")
 
     # Auth
@@ -303,12 +305,12 @@ async def intake(
             ),
         )
 
-    # Read EOB if provided
+    # Read EOB if provided (read from form manually)
     eob_bytes: Optional[bytes] = None
     eob_media_type: Optional[str] = None
     eob_storage_key: str = ""
-    if eob_document is not None:
-        eob_bytes = await eob_document.read()
+    if eob_file is not None and hasattr(eob_file, "read"):
+        eob_bytes = await eob_file.read()
         if eob_bytes:
             if len(eob_bytes) > _MAX_BILL_SIZE_BYTES:
                 raise HTTPException(
@@ -316,7 +318,7 @@ async def intake(
                     detail=f"eob_document exceeds the maximum allowed size of "
                            f"{_MAX_BILL_SIZE_BYTES // (1024*1024)} MB.",
                 )
-            eob_media_type = eob_document.content_type
+            eob_media_type = getattr(eob_file, "content_type", "application/pdf")
             eob_storage_key = storage.save(eob_bytes, eob_media_type or "application/pdf")
         else:
             eob_bytes = None
