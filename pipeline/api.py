@@ -73,6 +73,7 @@ from __future__ import annotations
 import logging
 import os
 import uuid
+from typing import Optional
 from contextlib import asynccontextmanager
 
 import httpx
@@ -261,18 +262,18 @@ def health() -> JSONResponse:
     )
 
 
-@app.post("/intake")
+@app.post("/intake", response_model=None)
 @limiter.limit(f"{_RATE_LIMIT_PER_MINUTE}/minute")
 @limiter.limit(f"{_RATE_LIMIT_PER_DAY}/day")
 async def intake(
     request: Request,
     bill_document: UploadFile = File(...),
-    eob_document: UploadFile | None = File(None),
-    household_income: float | None = Form(None),
-    household_size: int | None = Form(None),
-    state: str | None = Form(None),
-    locality: str | None = Form(None),
-) -> JSONResponse:
+    eob_document: Optional[UploadFile] = File(None),
+    household_income: Optional[float] = Form(None),
+    household_size: Optional[int] = Form(None),
+    state: Optional[str] = Form(None),
+    locality: Optional[str] = Form(None),
+):
     request_id = getattr(request.state, "request_id", "-")
 
     # Auth
@@ -303,8 +304,8 @@ async def intake(
         )
 
     # Read EOB if provided
-    eob_bytes: bytes | None = None
-    eob_media_type: str | None = None
+    eob_bytes: Optional[bytes] = None
+    eob_media_type: Optional[str] = None
     eob_storage_key: str = ""
     if eob_document is not None:
         eob_bytes = await eob_document.read()
@@ -466,7 +467,7 @@ async def start_negotiation(
     request: Request,
     case_id: str,
     billed_amount: float = Form(...),
-    target_amount: float | None = Form(None),
+    target_amount: Optional[float] = Form(None),
 ) -> JSONResponse:
     """
     Start tracking a negotiation for a case.  Creates a negotiations row
@@ -504,8 +505,8 @@ async def record_contact(
     request: Request,
     case_id: str,
     channel: str = Form(...),
-    letter_storage_key: str | None = Form(None),
-    notes: str | None = Form(None),
+    letter_storage_key: Optional[str] = Form(None),
+    notes: Optional[str] = Form(None),
 ) -> JSONResponse:
     """
     Record an outreach attempt (letter sent, call made, etc.).
@@ -540,7 +541,7 @@ async def record_outcome(
     case_id: str,
     agreed_amount: float = Form(...),
     paid: bool = Form(False),
-    provider_response: str | None = Form(None),
+    provider_response: Optional[str] = Form(None),
 ) -> JSONResponse:
     """
     Record the final negotiation outcome: what the provider agreed to.
@@ -606,8 +607,8 @@ async def handle_provider_response(
     request: Request,
     case_id: str,
     response_text: str = Form(...),
-    contact_id: str | None = Form(None),
-    response_type: str | None = Form(None),
+    contact_id: Optional[str] = Form(None),
+    response_type: Optional[str] = Form(None),
 ) -> JSONResponse:
     """
     Record a provider response, classify it, and return the recommended
@@ -662,12 +663,12 @@ async def draft_letter(
     case_id: str,
     patient_name: str = Form(...),
     facility_name: str = Form(...),
-    facility_address: str | None = Form(None),
-    account_number: str | None = Form(None),
-    date_of_service: str | None = Form(None),
+    facility_address: Optional[str] = Form(None),
+    account_number: Optional[str] = Form(None),
+    date_of_service: Optional[str] = Form(None),
     billed_amount: float = Form(...),
     letter_type: str = Form("initial"),  # "initial" | "followup"
-    followup_context_json: str | None = Form(None),
+    followup_context_json: Optional[str] = Form(None),
     round_number: int = Form(1),
 ) -> JSONResponse:
     """
@@ -795,11 +796,11 @@ async def send_letter(
     storage_key: str = Form(...),       # PDF storage key from draft-letter
     reference_number: str = Form(...),  # reference number from draft-letter
     channel: str = Form(...),           # letter_email | letter_fax | letter_mail
-    recipient_email: str | None = Form(None),
-    recipient_fax: str | None = Form(None),
-    recipient_name: str | None = Form(None),
-    recipient_address: str | None = Form(None),
-    notes: str | None = Form(None),
+    recipient_email: Optional[str] = Form(None),
+    recipient_fax: Optional[str] = Form(None),
+    recipient_name: Optional[str] = Form(None),
+    recipient_address: Optional[str] = Form(None),
+    notes: Optional[str] = Form(None),
 ) -> JSONResponse:
     """
     Deliver a drafted letter (by storage_key) via the specified channel,
