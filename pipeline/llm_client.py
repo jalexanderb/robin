@@ -213,7 +213,23 @@ def _complete_openai_compatible(
         timeout=120.0,
     )
     response.raise_for_status()
-    return response.json()["choices"][0]["message"]["content"]
+    data = response.json()
+    # Log the full response for debugging (truncated to 500 chars)
+    import logging
+    logging.getLogger("robinhealth.llm").info(
+        "LLM raw response: %s", str(data)[:500]
+    )
+    content_raw = data["choices"][0]["message"]["content"]
+    # Some models return None content when they only emit tool_calls
+    # or when the response is in a different field
+    if content_raw is None:
+        # Check for reasoning_content field (some Fireworks models)
+        content_raw = (
+            data["choices"][0]["message"].get("reasoning_content") or
+            data["choices"][0].get("text") or
+            ""
+        )
+    return content_raw
 
 
 def _complete_anthropic(
