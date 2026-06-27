@@ -502,6 +502,80 @@ def persist_bill(
     return str(bill_id)
 
 
+def persist_case_synthesis(case_id: str, synthesis: dict) -> None:
+    """Store the computed synthesis (JSONB) so the analysis can be restored later."""
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE cases SET synthesis_json = %s, updated_at = now() WHERE id = %s",
+                (psycopg2.extras.Json(synthesis), case_id),
+            )
+
+
+def fetch_case_synthesis(case_id: str) -> dict | None:
+    """Return the stored synthesis dict for a case, or None if not stored."""
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT synthesis_json FROM cases WHERE id = %s", (case_id,))
+            row = cur.fetchone()
+    return row[0] if (row and row[0] is not None) else None
+
+
+def fetch_bill_for_case(case_id: str) -> dict | None:
+    """
+    Return the most recent bill for a case as a plain dict (provider, totals,
+    line items) -- enough to rebuild the analysis view on resume. None if the
+    case has no persisted bill.
+    """
+    with db.connection() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id, provider_name_raw, provider_npi_raw, provider_address_raw,
+                       account_number, date_of_service, total_billed_amount, parsing_confidence
+                FROM bills WHERE case_id = %s ORDER BY created_at DESC LIMIT 1
+                """,
+                (case_id,),
+            )
+            bill = cur.fetchone()
+            if bill is None:
+                return None
+            cur.execute(
+                """
+                SELECT line_number, description, procedure_code, code_type, units, billed_amount
+                FROM bill_line_items WHERE bill_id = %s ORDER BY line_number
+                """,
+                (bill["id"],),
+            )
+            items = cur.fetchall()
+
+    def _f(v):
+        return float(v) if v is not None else None
+
+    return {
+        "provider": {
+            "name": bill["provider_name_raw"],
+            "npi": bill["provider_npi_raw"],
+            "address": bill["provider_address_raw"],
+        },
+        "account_number": bill["account_number"],
+        "date_of_service": bill["date_of_service"].isoformat() if bill["date_of_service"] else None,
+        "total_billed_amount": _f(bill["total_billed_amount"]),
+        "parsing_confidence": bill["parsing_confidence"],
+        "line_items": [
+            {
+                "line_number": it["line_number"],
+                "description": it["description"],
+                "procedure_code": it["procedure_code"],
+                "code_type": it["code_type"],
+                "units": _f(it["units"]),
+                "billed_amount": _f(it["billed_amount"]),
+            }
+            for it in items
+        ],
+    }
+
+
 def fetch_health_system_id_for_facility(facility_id: str) -> str | None:
     """Return health_system_id for a facility row, or None."""
     with db.connection() as conn:
@@ -524,6 +598,26 @@ def find_bill_id_for_case(case_id: str) -> str | None:
             )
             row = cur.fetchone()
     return str(row[0]) if row else None
+
+
+def fetch_bill_parsing_confidence(case_id: str) -> str | None:
+    """
+    Return the parsing_confidence of the most recent bill for a case
+    ('high' | 'medium' | 'low' | 'failed'), or None if no bill is persisted.
+
+    Used to gate negotiation-letter drafting: a letter built on a low- or
+    failed-confidence extraction can carry a wrong provider, amount, or code
+    into formal correspondence, which is a credibility (and liability) risk.
+    """
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT parsing_confidence FROM bills WHERE case_id = %s "
+                "ORDER BY created_at DESC LIMIT 1",
+                (case_id,),
+            )
+            row = cur.fetchone()
+    return row[0] if row else None
 
 
 # ============================================================

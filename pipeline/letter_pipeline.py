@@ -632,3 +632,164 @@ def render_followup_letter(
 
     doc.build(story)
     return buf.getvalue()
+
+
+# How long the insurer is given to respond. Internal appeals on ACA plans are
+# generally decided within 30 days (pre-service) / 60 days (post-service); 30 is
+# a reasonable, plan-agnostic ask for a post-service claim.
+DEFAULT_APPEAL_RESPONSE_DEADLINE_DAYS = 30
+
+
+def render_insurer_appeal_letter(
+    patient_name: str,
+    insurer_name: str,
+    reference_number: str,
+    insurer_address: str | None = None,
+    member_id: str | None = None,
+    claim_number: str | None = None,
+    date_of_service: str | None = None,
+    denial_reason: str | None = None,
+    response_deadline_days: int = DEFAULT_APPEAL_RESPONSE_DEADLINE_DAYS,
+    sender_name: str = "RobinHealth Patient Advocacy",
+    sender_email: str = "advocacy@robinhealth.com",
+    sender_phone: str = "(888) ROB-INHL",
+) -> bytes:
+    """
+    Render a formal appeal addressed to the patient's *insurer* (not the
+    provider), contesting a denied or mis-processed claim and asserting the
+    member's internal-appeal / external-review rights.
+
+    Distinct from the provider-directed letters above: the recipient is the
+    insurer's appeals department, the leverage is the member's plan benefits
+    and appeal rights (45 CFR 147.136 / ERISA), and the ask is to reprocess and
+    pay the claim -- not to discount a balance. Fields we don't have (member
+    id, claim number, date of service) render as bracketed placeholders the
+    patient fills in before sending, rather than being omitted.
+    """
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=LETTER,
+        leftMargin=0.9 * inch, rightMargin=0.9 * inch,
+        topMargin=0.5 * inch, bottomMargin=0.9 * inch,
+    )
+    s = _build_styles()
+    story = []
+
+    # Letterhead
+    lh_data = [[
+        Paragraph("RobinHealth", s["letterhead_name"]),
+        Paragraph("Your AI-enabled health advocate", s["letterhead_tagline"]),
+    ]]
+    lh_table = Table(lh_data, colWidths=[3.5 * inch, 3.5 * inch])
+    lh_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), _ROBINHEALTH_RED),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (0, -1), 16),
+        ("RIGHTPADDING", (-1, 0), (-1, -1), 12),
+        ("TOPPADDING", (0, 0), (-1, -1), 14),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 14),
+        ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+    ]))
+    story.append(lh_table)
+    story.append(Spacer(1, 0.15 * inch))
+
+    today = _date.today().strftime("%B %d, %Y")
+    story.append(Paragraph(
+        f"Date: <b>{today}</b>&nbsp;&nbsp;&nbsp;Reference: <b>{reference_number}</b>"
+        f"&nbsp;&nbsp;&nbsp;<b>FORMAL APPEAL</b>",
+        s["meta"],
+    ))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#DDDDDD")))
+    story.append(Spacer(1, 0.15 * inch))
+
+    # Recipient (insurer appeals department)
+    addr_lines = [f"<b>{insurer_name}</b>", "Appeals Department"]
+    if insurer_address:
+        for line in insurer_address.split(","):
+            line = line.strip()
+            if line:
+                addr_lines.append(line)
+    story.append(Paragraph("<br/>".join(addr_lines), s["address"]))
+    story.append(Spacer(1, 0.1 * inch))
+
+    # RE: line
+    re_parts = [
+        "RE: Appeal of Claim Determination",
+        f"Patient: {patient_name}",
+        f"Member ID: {member_id or '[Member ID]'}",
+        f"Claim #: {claim_number or '[Claim number]'}",
+    ]
+    if date_of_service:
+        re_parts.append(f"Date of Service: {date_of_service}")
+    story.append(Paragraph(" | ".join(re_parts), s["subject"]))
+
+    # Body
+    story.append(Paragraph("Dear Appeals Department:", s["body"]))
+    opening = (
+        f"RobinHealth is writing as the authorized representative of {patient_name} to "
+        f"formally appeal the determination on the claim referenced above"
+    )
+    opening += f", for which the stated reason was: {denial_reason}." if denial_reason else "."
+    story.append(Paragraph(opening, s["body"]))
+    story.append(Paragraph(
+        "We respectfully request that you reconsider and reprocess this claim in accordance "
+        "with the member's plan benefits, and issue a corrected Explanation of Benefits "
+        "reflecting the correct allowed amount, plan payment, and member responsibility.",
+        s["body"],
+    ))
+
+    # Appeal-rights citations box
+    cite_text = (
+        "<b>Applicable Appeal Rights:</b><br/>"
+        "• 45 CFR §147.136 — the member is entitled to a full and fair internal appeal "
+        "and, if the denial is upheld, an independent external review.<br/>"
+        "• 29 CFR §2560.503-1 — for plans governed by ERISA, this establishes the member's "
+        "appeal rights and the plan's response deadlines."
+    )
+    cite_box = Table(
+        [[Paragraph(cite_text, ParagraphStyle(
+            "cite", fontName="Helvetica", fontSize=9, textColor=_DARK, leading=13,
+        ))]],
+        colWidths=[6.6 * inch],
+    )
+    cite_box.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), _LIGHT_GREY),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ("BOX", (0, 0), (-1, -1), 1, colors.HexColor("#CCCCCC")),
+    ]))
+    story.append(Spacer(1, 0.08 * inch))
+    story.append(cite_box)
+
+    story.append(Spacer(1, 0.15 * inch))
+    story.append(Paragraph(
+        f"Please provide a written determination of this appeal within "
+        f"<b>{response_deadline_days} days</b>. RobinHealth is the member's authorized "
+        f"representative for this appeal; please direct correspondence accordingly.",
+        s["body"],
+    ))
+
+    story.append(Spacer(1, 0.25 * inch))
+    story.append(Paragraph("Sincerely,", s["body"]))
+    story.append(Spacer(1, 0.35 * inch))
+    story.append(Paragraph(
+        f"<b>{sender_name}</b><br/>"
+        f"Authorized Representative for {patient_name}<br/>"
+        f"{sender_email} | {sender_phone}",
+        s["body"],
+    ))
+
+    story.append(Spacer(1, 0.2 * inch))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#DDDDDD")))
+    story.append(Spacer(1, 0.08 * inch))
+    story.append(Paragraph(
+        "RobinHealth is an AI-enabled patient advocacy service acting under patient "
+        "authorization, and is not a law firm. This letter does not constitute legal advice. "
+        "Reference: " + reference_number,
+        s["disclaimer"],
+    ))
+
+    doc.build(story)
+    return buf.getvalue()

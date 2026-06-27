@@ -338,3 +338,16 @@ ALTER TABLE patients
 -- fee_agreement_terms_version: e.g. "v1.0" -- lets us track which version
 -- of the terms they agreed to if the fee structure ever changes
 -- fee_agreement_terms_text: the exact text shown to them at agreement time
+
+-- Billing plan the patient chose. 'contingency' = 20% of savings, capped at
+-- $1,000, nothing if we save nothing. 'membership' = $50/month flat and we
+-- take 0% of savings. The patient picks whichever costs them less; the fee
+-- RobinHealth takes out of savings is computed in outcome_pipeline by plan.
+ALTER TABLE patients
+    ADD COLUMN IF NOT EXISTS plan TEXT NOT NULL DEFAULT 'contingency';
+
+-- Persisted synthesis (savings estimate + reasons) for a case, so the analysis
+-- can be restored when a patient resumes -- synthesis is otherwise computed
+-- in-memory at intake and never stored. Serialized SynthesisResult as JSONB.
+ALTER TABLE cases
+    ADD COLUMN IF NOT EXISTS synthesis_json JSONB;

@@ -15,7 +15,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 
 // API base URL -- set VITE_API_BASE (Vite) or REACT_APP_API_BASE (CRA)
 // to point at the Robin FastAPI backend. Falls back to localhost for dev.
-const API_BASE = "https://robin-production-542a.up.railway.app";
+const API_BASE = (
   (typeof import_meta_env !== "undefined" && import_meta_env.VITE_API_BASE) ||
   (typeof process !== "undefined" && process.env?.REACT_APP_API_BASE) ||
   "http://localhost:8001"
@@ -213,7 +213,7 @@ function useSessionTimeout(active, onTimeout) {
 // HIPAA: no PHI is collected or displayed at this stage.
 function WelcomeView({ onEnter }) {
   const ROBIN_OPENING = [
-    { from: "robin", text: "Hi, I'm Robin — your AI health advocate. I help people like you fight back against confusing medical bills.", delay: 0 },
+    { from: "robin", text: "Hi, I'm Robin — your automated health advocate. I help people fight back against confusing medical bills. It's important to know this product is still in beta testing and everything should be reviewed carefully by you, the user.", delay: 0 },
     { from: "robin", text: "If you've got a medical bill that feels too high, drop it here and I'll tell you exactly what you might save — no commitment, no upfront cost.", delay: 700 },
     { from: "robin", text: "You can also ask me anything about your bill, your insurance, or what your rights are.", delay: 1400 },
   ];
@@ -289,7 +289,7 @@ function WelcomeView({ onEnter }) {
     setUploading(false);
     addRobinReply("Done. I found some things worth fighting for. Let me show you what I found.", 200);
     await new Promise(r => setTimeout(r, 1800));
-    onEnter("new"); // signals App to transition to analysis
+    onEnter({ caseId: "demo-case-001", synthesis: MOCK.case.synthesis, bill: MOCK.case.bill });
   };
 
   const QUICK_PROMPTS = [
@@ -306,7 +306,7 @@ function WelcomeView({ onEnter }) {
         <div style={{ width: 34, height: 34, borderRadius: "50%", background: C.red, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 15, color: C.white, flexShrink: 0 }}>R</div>
         <div>
           <p style={{ color: C.white, fontWeight: 700, fontSize: 15, margin: 0 }}>Robin</p>
-          <p style={{ color: "#555", fontSize: 12, margin: 0 }}>Helping you fight unfair medical bills</p>
+
         </div>
       </div>
 
@@ -532,14 +532,12 @@ function UploadView({ patientId, api, onUploaded }) {
         const synthesis = result.synthesis || MOCK.case.synthesis;
         const bill = result.bill || MOCK.case.bill;
         const caseId = data.case_id || MOCK.case.case_id;
-        const patientId = data.patient_id;  // returned by the server
-        onUploaded({ caseId, synthesis, bill, patientId });
+        const patientId = data.patient_id;
+        onEnter({ caseId, synthesis, bill, patientId });
       } catch (e) {
-        // API unreachable or LLM unavailable — show demo result so the
-        // user can still see what the flow looks like.
         console.warn("intake API unreachable — showing demo result:", e.message);
         await new Promise(r => setTimeout(r, 1200));
-        onUploaded({ caseId: MOCK.case.case_id, synthesis: MOCK.case.synthesis, bill: MOCK.case.bill });
+        onEnter({ caseId: MOCK.case.case_id, synthesis: MOCK.case.synthesis, bill: MOCK.case.bill });
       }
     } catch (e) {
       setError(e.message);
@@ -587,13 +585,13 @@ function UploadView({ patientId, api, onUploaded }) {
         <p style={{ fontWeight: 600, color: C.dark, fontSize: 14, margin: "0 0 16px" }}>Your household details <span style={{ fontWeight: 400, color: C.muted }}>(helps determine charity care eligibility)</span></p>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
           {[
-            { label: "Annual income", placeholder: "$48,000", val: income, set: setIncome, type: "number" },
+            { label: "Annual income", placeholder: "$48,000", val: income, set: setIncome, type: "text" },
             { label: "Household size", placeholder: "3", val: size, set: setSize, type: "number" },
           ].map(f => (
             <div key={f.label}>
               <label style={{ fontSize: 12, color: C.muted, display: "block", marginBottom: 4 }}>{f.label}</label>
               <input type={f.type} placeholder={f.placeholder} value={f.val} onChange={e => f.set(e.target.value)}
-                style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "9px 12px", fontSize: 14, color: C.dark, outline: "none", boxSizing: "border-box" }} />
+                style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "9px 12px", fontSize: 14, color: C.dark, outline: "none", boxSizing: "border-box", background: C.white, appearance: "none", MozAppearance: "textfield" }} />
             </div>
           ))}
           <div>
@@ -903,15 +901,22 @@ export default function App() {
 
   useSessionTimeout(view !== "welcome", handleTimeout);
 
-  const handleEnter = (signal) => {
+  const handleEnter = (result) => {
     // Called by WelcomeView after a bill is uploaded and analyzed.
-    // "new" = first-time user going through fee agreement flow.
-    // In production: the POST /intake response returns a patient_id;
-    // that ID is stored in state here (not localStorage -- HIPAA).
+    // result can be a signal string "new" or an object with { caseId, synthesis, bill, patientId }
     setSessionMsg("");
-    if (signal === "new") {
-      setPatientId("demo-patient-001"); // set from intake response in production
-      setView("agreement");
+    if (result && typeof result === "object") {
+      // Bill was already uploaded in the chat — go straight to analysis
+      const { caseId, synthesis, bill, patientId: newPatientId } = result;
+      if (newPatientId) setPatientId(newPatientId);
+      else setPatientId("demo-patient-001");
+      setCaseId(caseId);
+      setUploadResult({ synthesis, bill });
+      setView("analysis");
+    } else {
+      // Fallback: go to upload screen
+      setPatientId("demo-patient-001");
+      setView("upload");
     }
   };
 
@@ -942,7 +947,7 @@ export default function App() {
         <div style={{ background: C.white, borderBottom: `1px solid ${C.border}`, padding: "12px 24px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div style={{ background: C.red, borderRadius: 6, padding: "4px 12px", display: "inline-block" }}>
             <span style={{ color: C.white, fontWeight: 800, fontSize: 15, letterSpacing: "-0.3px" }}>Robin</span>
-          <span style={{ color: "#888", fontSize: 12 }}>Helping you fight unfair medical bills</span>
+
           </div>
           {patientId && (
             <Btn variant="ghost" onClick={handleLogout} style={{ fontSize: 12, padding: "4px 10px" }}>Sign out</Btn>

@@ -568,10 +568,13 @@ def test_process_next_job_marks_failed_for_unregistered_job_type():
 
 
 def test_llm_client_complete_sends_correct_request_shape_text_only():
+    import os
+
     fake_response = MagicMock()
     fake_response.json.return_value = {"choices": [{"message": {"content": "the answer"}}]}
 
-    with patch("httpx.post", return_value=fake_response) as mock_post:
+    with patch.dict(os.environ, {"LLM_PROVIDER": "openai_compatible"}), \
+         patch("httpx.post", return_value=fake_response) as mock_post:
         result = llm_client.complete("hello there", max_tokens=50)
 
     assert result == "the answer"
@@ -582,10 +585,13 @@ def test_llm_client_complete_sends_correct_request_shape_text_only():
 
 
 def test_llm_client_complete_includes_images_as_data_urls():
+    import os
+
     fake_response = MagicMock()
     fake_response.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
 
-    with patch("httpx.post", return_value=fake_response) as mock_post:
+    with patch.dict(os.environ, {"LLM_PROVIDER": "openai_compatible"}), \
+         patch("httpx.post", return_value=fake_response) as mock_post:
         llm_client.complete("describe this", images=[(b"fake-bytes", "image/png")])
 
     content = mock_post.call_args.kwargs["json"]["messages"][0]["content"]
@@ -600,7 +606,7 @@ def test_llm_client_complete_includes_auth_header_when_api_key_set():
     fake_response = MagicMock()
     fake_response.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
 
-    with patch.dict(os.environ, {"LLM_API_KEY": "secret-token"}), \
+    with patch.dict(os.environ, {"LLM_PROVIDER": "openai_compatible", "LLM_API_KEY": "secret-token"}), \
          patch("httpx.post", return_value=fake_response) as mock_post:
         llm_client.complete("hello")
 
@@ -608,7 +614,12 @@ def test_llm_client_complete_includes_auth_header_when_api_key_set():
 
 
 def test_llm_client_complete_json_strips_code_fences():
-    with patch("llm_client.complete", return_value='```json\n{"a": 1, "b": [2, 3]}\n```'):
+    import os
+
+    # Scraping/repair path is openai_compatible-only; the anthropic path uses
+    # forced tool-use and never sees fenced text (see the structured-output test below).
+    with patch.dict(os.environ, {"LLM_PROVIDER": "openai_compatible"}), \
+         patch("llm_client.complete", return_value='```json\n{"a": 1, "b": [2, 3]}\n```'):
         assert llm_client.complete_json("doesn't matter") == {"a": 1, "b": [2, 3]}
 
 
@@ -1072,6 +1083,7 @@ def test_argument_for_reason_falls_back_to_summary_for_unrecognized_code():
 
 def test_complete_json_degenerate_fence_only_response_raises_clean_json_error():
     import json
+    import os
 
     # Bug review finding: .split("\n", 1)[1] crashed with IndexError on
     # a response that's just the opening fence with no newline at all
@@ -1080,7 +1092,8 @@ def test_complete_json_degenerate_fence_only_response_raises_clean_json_error():
     # ValueError) handling for "the LLM response couldn't be parsed."
     # Should now raise a clean JSONDecodeError (a ValueError subclass)
     # instead.
-    with patch("llm_client.complete", return_value="```"):
+    with patch.dict(os.environ, {"LLM_PROVIDER": "openai_compatible"}), \
+         patch("llm_client.complete", return_value="```"):
         try:
             llm_client.complete_json("whatever")
             assert False, "expected a JSONDecodeError"
@@ -1090,8 +1103,10 @@ def test_complete_json_degenerate_fence_only_response_raises_clean_json_error():
 
 def test_complete_json_truncated_response_raises_clean_json_error_not_indexerror():
     import json
+    import os
 
-    with patch("llm_client.complete", return_value='```json\n{"a": 1'):
+    with patch.dict(os.environ, {"LLM_PROVIDER": "openai_compatible"}), \
+         patch("llm_client.complete", return_value='```json\n{"a": 1'):
         try:
             llm_client.complete_json("whatever")
             assert False, "expected a JSONDecodeError"
@@ -1233,19 +1248,65 @@ def test_llm_client_anthropic_parses_multiple_text_blocks():
     assert result == "first part. second part."
 
 
-def test_llm_client_default_provider_is_openai_compatible_when_unset():
+def test_llm_client_anthropic_complete_json_forces_tool_use_and_unwraps_data():
     import os
 
+    # The anthropic path forces a single emit_json tool call; the API returns
+    # the payload as the tool input's "data" field, which we return verbatim.
+    payload = {"provider": {"name": "Test Hospital"}, "total_billed_amount": 200.0}
     fake_response = MagicMock()
-    fake_response.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
+    fake_response.json.return_value = {"content": [
+        {"type": "tool_use", "name": "emit_json", "id": "toolu_1", "input": {"data": payload}},
+    ]}
+
+    with patch.dict(os.environ, {"LLM_PROVIDER": "anthropic"}), \
+         patch("httpx.post", return_value=fake_response) as mock_post:
+        result = llm_client.complete_json("extract the bill")
+
+    assert result == payload
+    body = mock_post.call_args.kwargs["json"]
+    # Forced tool choice -- this is what guarantees valid JSON (no scraping).
+    assert body["tool_choice"] == {"type": "tool", "name": "emit_json"}
+    assert body["tools"][0]["name"] == "emit_json"
+    # No sampling params -- they 400 on the default model.
+    assert "temperature" not in body and "top_p" not in body
+
+
+def test_llm_client_anthropic_complete_json_unwraps_top_level_array():
+    import os
+
+    # Some callers (run_compliance_checklist) expect a top-level array; the
+    # "data" envelope carries it through unchanged.
+    findings = [{"requirement_code": "A"}, {"requirement_code": "B"}]
+    fake_response = MagicMock()
+    fake_response.json.return_value = {"content": [
+        {"type": "tool_use", "name": "emit_json", "id": "toolu_2", "input": {"data": findings}},
+    ]}
+
+    with patch.dict(os.environ, {"LLM_PROVIDER": "anthropic"}), \
+         patch("httpx.post", return_value=fake_response):
+        result = llm_client.complete_json("list the findings")
+
+    assert result == findings
+
+
+def test_llm_client_default_provider_is_anthropic_when_unset():
+    import os
+
+    # Default flipped to Anthropic: Claude is now the out-of-the-box provider
+    # (quality + guaranteed-valid structured output). Set
+    # LLM_PROVIDER=openai_compatible to use a self-hosted/open-weight model.
+    fake_response = MagicMock()
+    fake_response.json.return_value = {"content": [{"type": "text", "text": "ok"}]}
 
     with patch.dict(os.environ, {}, clear=False):
         os.environ.pop("LLM_PROVIDER", None)
         with patch("httpx.post", return_value=fake_response) as mock_post:
             llm_client.complete("hello")
 
-    # Unchanged default behavior: still hits /chat/completions, not /v1/messages
-    assert "/chat/completions" in mock_post.call_args.args[0]
+    # Hits Anthropic's Messages API, not the OpenAI-compatible chat endpoint.
+    assert mock_post.call_args.args[0].endswith("/v1/messages")
+    assert "/chat/completions" not in mock_post.call_args.args[0]
 
 
 
@@ -2239,9 +2300,41 @@ def test_fee_terms_content_is_complete():
     assert "authorize" in FEE_TERMS_TEXT.lower() # authorization language
 
 
-def test_fee_terms_version_is_stable():
-    from outcome_pipeline import FEE_TERMS_VERSION
-    assert FEE_TERMS_VERSION == "v1.0"
+def test_fee_terms_version_reflects_two_plan_model():
+    # Bumped to v2.0 when the $50/month membership ceiling was added alongside
+    # the capped 20% contingency fee. The version bump intentionally forces
+    # existing patients to re-accept the new pricing terms.
+    from outcome_pipeline import get_fee_terms, FEE_TERMS_VERSION, FEE_TERMS_TEXT
+    assert FEE_TERMS_VERSION == "v2.0"
+    terms = get_fee_terms()
+    assert terms["membership_monthly_usd"] == 50.0
+    assert terms["fee_cap_usd"] == 1000.0
+    plan_ids = {p["id"] for p in terms["plans"]}
+    assert plan_ids == {"contingency", "membership"}
+    assert "$50" in FEE_TERMS_TEXT and "$1,000" in FEE_TERMS_TEXT
+
+
+def test_compute_robinhealth_fee_contingency_takes_20_percent():
+    from outcome_pipeline import compute_robinhealth_fee
+    assert compute_robinhealth_fee(3000.0, "contingency") == 600.0
+
+
+def test_compute_robinhealth_fee_contingency_is_capped_at_1000():
+    from outcome_pipeline import compute_robinhealth_fee
+    # 20% of $50,000 = $10,000, but the fee is capped at $1,000.
+    assert compute_robinhealth_fee(50000.0, "contingency") == 1000.0
+
+
+def test_compute_robinhealth_fee_membership_takes_nothing_from_savings():
+    from outcome_pipeline import compute_robinhealth_fee
+    # Members pay the flat monthly fee; we never take a cut of their savings.
+    assert compute_robinhealth_fee(50000.0, "membership") == 0.0
+
+
+def test_compute_robinhealth_fee_zero_or_no_savings_is_free():
+    from outcome_pipeline import compute_robinhealth_fee
+    assert compute_robinhealth_fee(0.0, "contingency") == 0.0
+    assert compute_robinhealth_fee(None, "contingency") == 0.0
 
 
 

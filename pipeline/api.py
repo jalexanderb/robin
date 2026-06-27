@@ -72,6 +72,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import uuid
 from typing import Optional
 from contextlib import asynccontextmanager
@@ -80,7 +81,7 @@ import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -89,6 +90,7 @@ import case_pipeline
 import db
 import delivery_pipeline
 import letter_pipeline
+import llm_client
 import outcome_pipeline
 import pricing_pipeline
 import repository
@@ -118,6 +120,15 @@ ALLOWED_BILL_CONTENT_TYPES = {
     "image/png", "image/jpeg", "image/jpg", "image/webp", "application/pdf",
 }
 
+# storage_keys are content-addressed (sha256 hex + extension). Validate the
+# shape before loading so the download endpoint can never be coaxed into
+# reading outside the blob store, and so we serve a correct content type.
+_STORAGE_KEY_RE = re.compile(r"^[a-f0-9]{64}(\.[a-z0-9]{2,5})?$")
+_CONTENT_TYPE_BY_EXT = {
+    ".pdf": "application/pdf", ".png": "image/png",
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
+}
+
 _CORS_ORIGINS = [
     o.strip()
     for o in os.environ.get("CORS_ORIGINS", "*").split(",")
@@ -126,6 +137,79 @@ _CORS_ORIGINS = [
 
 _RATE_LIMIT_PER_MINUTE = os.environ.get("RATE_LIMIT_PER_MINUTE", "20")
 _RATE_LIMIT_PER_DAY = os.environ.get("RATE_LIMIT_PER_DAY", "200")
+
+
+# System prompt for the patient-facing chat (POST /chat). Grounds Robin's
+# answers in the patient's own case when context is supplied, and keeps it
+# inside its lane (bills, insurance, patient rights, financial assistance).
+ROBIN_CHAT_SYSTEM = (
+    "You are Robin, an AI-powered patient advocate for RobinHealth. You help "
+    "people understand and push back on confusing or excessive medical bills. "
+    "You can explain medical bills and the charges/codes on them, how insurance "
+    "and EOBs work, a patient's rights, hospital financial assistance policies "
+    "(charity care / FAP) and the 501(r) rules for nonprofit hospitals, and how "
+    "bill negotiation works.\n\n"
+    "Style: warm, direct, and plain-spoken. Short paragraphs. Answer the "
+    "question first, then any brief caveat. No jargon without explaining it.\n\n"
+    "Ground rules:\n"
+    "- RobinHealth is in beta. For anything consequential, remind the user to "
+    "review carefully before acting.\n"
+    "- You are not a lawyer, doctor, or tax advisor, and you do not give legal, "
+    "medical, or tax advice. Say so if a question crosses that line.\n"
+    "- Never invent specific dollar amounts, statutes, policy terms, or facts "
+    "about the user's bill that you were not given. If you don't know, say so "
+    "and explain how to find out.\n"
+    "- If a precise answer needs the actual bill and one hasn't been shared, "
+    "encourage the user to upload it.\n"
+    "- Pricing: the user never pays more than $50/month, or 20% of what "
+    "RobinHealth saves them (capped at $1,000) -- whichever they prefer. "
+    "Pay-per-win charges nothing if nothing is saved; the $50/month membership "
+    "takes 0% of savings and is free until the first win.\n"
+    "- If a question is clearly unrelated to medical bills, healthcare costs, "
+    "or insurance, gently steer back to what you can help with."
+)
+
+
+def _build_chat_prompt(message: str, context_json: Optional[str]) -> str:
+    """
+    Assemble the user turn for /chat: the patient's question, plus a compact,
+    plain-text summary of their current case (if the front-end supplied one)
+    so Robin can answer about *their* bill rather than in generalities.
+    """
+    if not context_json:
+        return message
+
+    import json
+    try:
+        ctx = json.loads(context_json)
+    except (json.JSONDecodeError, TypeError):
+        return message
+    if not isinstance(ctx, dict):
+        return message
+
+    lines: list[str] = []
+    provider = ctx.get("provider")
+    if provider:
+        lines.append(f"- Provider: {provider}")
+    if ctx.get("billed_amount") is not None:
+        lines.append(f"- Total billed: ${ctx['billed_amount']}")
+    if ctx.get("estimated_low") is not None:
+        lines.append(f"- Robin's estimated reduced balance: ${ctx['estimated_low']}")
+    if ctx.get("household_income") is not None:
+        lines.append(f"- Household income: ${ctx['household_income']}")
+    if ctx.get("household_size") is not None:
+        lines.append(f"- Household size: {ctx['household_size']}")
+    for reason in (ctx.get("reasons") or [])[:5]:
+        if isinstance(reason, str) and reason.strip():
+            lines.append(f"- Finding: {reason.strip()}")
+
+    if not lines:
+        return message
+    return (
+        "Here is the context for this patient's current case:\n"
+        + "\n".join(lines)
+        + f"\n\nPatient's question: {message}"
+    )
 
 
 # ============================================================
@@ -389,6 +473,54 @@ async def intake(request: Request):
     }))
 
 
+@app.post("/chat")
+@limiter.limit(f"{_RATE_LIMIT_PER_MINUTE}/minute")
+@limiter.limit(f"{_RATE_LIMIT_PER_DAY}/day")
+async def chat(
+    request: Request,
+    message: str = Form(...),
+    context_json: Optional[str] = Form(None),
+) -> JSONResponse:
+    """
+    Free-form patient Q&A, answered by the configured LLM (Claude by default).
+
+    This replaces the front-end's old keyword/if-else canned replies: real
+    answers about the user's bill, insurance, rights, and financial-assistance
+    options. Optional context_json (a small JSON summary of the user's current
+    case from the /intake response) lets Robin answer about *their* bill.
+
+    Returns {"reply": "..."}. On LLM error, returns a graceful fallback message
+    with HTTP 200 so the chat UI never shows a hard error to a patient.
+    """
+    _check_auth(request)
+    request_id = getattr(request.state, "request_id", "-")
+
+    cleaned = (message or "").strip()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="message must not be empty")
+    if len(cleaned) > 4000:
+        cleaned = cleaned[:4000]
+
+    prompt = _build_chat_prompt(cleaned, context_json)
+    try:
+        reply = llm_client.complete(
+            prompt, system=ROBIN_CHAT_SYSTEM, max_tokens=700,
+        ).strip()
+    except Exception as exc:  # noqa: BLE001 -- patient UX must never hard-fail here
+        logger.warning("request_id=%s chat LLM error: %s", request_id, exc)
+        return JSONResponse(content={
+            "reply": (
+                "Sorry — I'm having trouble answering right now. You can still "
+                "upload your bill and I'll analyze it, or try your question again "
+                "in a moment."
+            ),
+            "degraded": True,
+        })
+
+    logger.info("request_id=%s chat reply_len=%d", request_id, len(reply))
+    return JSONResponse(content={"reply": reply})
+
+
 @app.get("/patients/{patient_id}/fee-terms")
 async def get_fee_terms(request: Request, patient_id: str) -> JSONResponse:
     """
@@ -409,6 +541,7 @@ async def get_fee_terms(request: Request, patient_id: str) -> JSONResponse:
             "patient_id": patient_id,
             "terms": terms,
             "agreement_status": agreement_status,
+            "current_plan": outcome_pipeline.get_patient_plan(patient_id),
         })
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
@@ -457,13 +590,44 @@ async def agree_to_terms(
             "accepted_at": status["accepted_at"],
             "terms_version": status["terms_version"],
             "message": (
-                "Fee agreement recorded. You may now proceed to negotiate "
-                "your medical bills. RobinHealth will charge 20% of any "
-                "savings achieved."
+                "Fee agreement recorded. You may now proceed with your "
+                "medical bills. You'll never pay more than $50/month, or 20% "
+                "of what we save you (capped at $1,000) — whichever you "
+                "choose. Set your plan at POST /patients/{patient_id}/plan."
             ),
         })
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.post("/patients/{patient_id}/plan")
+@limiter.limit(f"{_RATE_LIMIT_PER_MINUTE}/minute")
+async def set_plan(
+    request: Request,
+    patient_id: str,
+    plan: str = Form(...),  # "contingency" | "membership"
+) -> JSONResponse:
+    """
+    Choose the billing plan: 'contingency' (20% of savings, capped at $1,000,
+    nothing if we save nothing) or 'membership' ($50/month flat, 0% of
+    savings, free until the first win). The patient picks whichever costs less.
+    """
+    _check_auth(request)
+    request_id = getattr(request.state, "request_id", "-")
+    try:
+        outcome_pipeline.set_patient_plan(patient_id, plan)
+    except ValueError as exc:
+        # Unknown plan -> 400; unknown patient -> 404
+        if "Unknown plan" in str(exc):
+            raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc))
+    logger.info("request_id=%s patient_id=%s plan=%s", request_id, patient_id, plan)
+    return JSONResponse(content={
+        "patient_id": patient_id,
+        "plan": plan,
+        "membership_monthly_usd": outcome_pipeline.MEMBERSHIP_MONTHLY_PRICE_USD,
+        "contingency_fee_cap_usd": outcome_pipeline.FEE_CAP_USD,
+    })
 
 
 @app.post("/cases/{case_id}/negotiate")
@@ -606,6 +770,29 @@ async def get_case(request: Request, case_id: str) -> JSONResponse:
     }))
 
 
+@app.get("/cases/{case_id}/full")
+async def get_case_full(request: Request, case_id: str) -> JSONResponse:
+    """
+    Full case state for resuming a session: the bill, the stored synthesis
+    (savings estimate + reasons), and any negotiation. Lets the front-end
+    rebuild the analysis view without re-uploading the bill.
+    """
+    _check_auth(request)
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT status FROM cases WHERE id = %s", (case_id,))
+            row = cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Case {case_id!r} not found")
+    return JSONResponse(content=jsonable_encoder({
+        "case_id": case_id,
+        "case_status": row[0],
+        "bill": repository.fetch_bill_for_case(case_id),
+        "synthesis": repository.fetch_case_synthesis(case_id),
+        "negotiation": outcome_pipeline.fetch_negotiation_for_case(case_id),
+    }))
+
+
 @app.post("/cases/{case_id}/response")
 @limiter.limit(f"{_RATE_LIMIT_PER_MINUTE}/minute")
 async def handle_provider_response(
@@ -691,6 +878,29 @@ async def draft_letter(
     _check_auth(request)
     request_id = getattr(request.state, "request_id", "-")
 
+    # Confidence gate: refuse to draft a letter when the bill was extracted
+    # with low/failed confidence -- a wrong amount, provider, or code in formal
+    # correspondence to a provider is a credibility and liability risk. Only
+    # blocks when a bill is persisted AND its confidence is poor; cases with no
+    # persisted bill (e.g. direct API use) are not blocked.
+    confidence = repository.fetch_bill_parsing_confidence(case_id)
+    if confidence in ("low", "failed"):
+        logger.info("request_id=%s draft-letter blocked: parsing_confidence=%s", request_id, confidence)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "low_confidence_extraction",
+                "message": (
+                    f"The bill for this case was extracted with '{confidence}' "
+                    "confidence, so a negotiation letter can't be generated yet "
+                    "-- it could carry a wrong amount, provider, or code into a "
+                    "formal letter. Please upload a clearer or itemized bill and "
+                    "re-run the analysis first."
+                ),
+                "parsing_confidence": confidence,
+            },
+        )
+
     reference_number = delivery_pipeline.make_reference_number(case_id)
     recipient = letter_pipeline.RecipientInfo(
         facility_name=facility_name,
@@ -739,10 +949,13 @@ async def draft_letter(
                 recipient=recipient,
                 billed_amount=billed_amount,
             )
-            # Try LLM draft; fall back to a template body if LLM is unreachable
+            # Try LLM draft; fall back to a template body only if the LLM
+            # endpoint is unreachable or errors at the HTTP layer. Other
+            # failures (config, parsing, bugs) propagate to the outer handler
+            # as a 500 rather than being silently masked by the template.
             try:
                 drafted = letter_pipeline.draft_letter(context)
-            except Exception:
+            except httpx.HTTPError:
                 # Template fallback: professional letter without LLM
                 template_body = (
                     f"Dear Billing Department,\n\n"
@@ -791,6 +1004,86 @@ async def draft_letter(
     except Exception as exc:
         logger.warning("request_id=%s draft-letter error: %s", request_id, exc)
         raise HTTPException(status_code=500, detail=f"Letter rendering failed: {exc}")
+
+
+@app.post("/cases/{case_id}/appeal-letter")
+@limiter.limit(f"{_RATE_LIMIT_PER_MINUTE}/minute")
+async def appeal_letter(
+    request: Request,
+    case_id: str,
+    patient_name: str = Form(...),
+    insurer_name: str = Form(...),
+    insurer_address: Optional[str] = Form(None),
+    member_id: Optional[str] = Form(None),
+    claim_number: Optional[str] = Form(None),
+    date_of_service: Optional[str] = Form(None),
+    denial_reason: Optional[str] = Form(None),
+) -> JSONResponse:
+    """
+    Draft and render an appeal addressed to the patient's insurer (a denied or
+    mis-processed claim), as a PDF. Same response shape as draft-letter, so the
+    front-end reuses the send-letter / open-PDF flow. Not gated on bill
+    extraction confidence -- the appeal is about the insurer's claim handling,
+    not the provider's bill.
+    """
+    _check_auth(request)
+    request_id = getattr(request.state, "request_id", "-")
+    reference_number = delivery_pipeline.make_reference_number(case_id)
+    try:
+        pdf_bytes = letter_pipeline.render_insurer_appeal_letter(
+            patient_name=patient_name,
+            insurer_name=insurer_name,
+            reference_number=reference_number,
+            insurer_address=insurer_address,
+            member_id=member_id,
+            claim_number=claim_number,
+            date_of_service=date_of_service,
+            denial_reason=denial_reason,
+        )
+        storage_key = storage.save(pdf_bytes, "application/pdf")
+        logger.info(
+            "request_id=%s case_id=%s appeal reference=%s pdf_size=%d",
+            request_id, case_id, reference_number, len(pdf_bytes),
+        )
+        return JSONResponse(content={
+            "reference_number": reference_number,
+            "storage_key": storage_key,
+            "pdf_size_bytes": len(pdf_bytes),
+            "message": (
+                "Insurer appeal letter drafted and rendered to PDF. "
+                "Call POST /cases/{case_id}/send-letter to deliver it, "
+                "or download the PDF using the storage_key."
+            ),
+        })
+    except Exception as exc:
+        logger.warning("request_id=%s appeal-letter error: %s", request_id, exc)
+        raise HTTPException(status_code=500, detail=f"Appeal letter rendering failed: {exc}")
+
+
+@app.get("/letters/{storage_key}")
+async def get_letter(request: Request, storage_key: str):
+    """
+    Serve a drafted letter PDF by its storage_key (returned by draft-letter),
+    so the patient can view or download it.
+
+    storage_keys are content-addressed sha256 hashes -- effectively
+    unguessable capability tokens. Path traversal is doubly prevented:
+    storage.load() strips to basename, and the key shape is validated here.
+    """
+    _check_auth(request)
+    if not _STORAGE_KEY_RE.match(storage_key):
+        raise HTTPException(status_code=400, detail="Invalid storage_key")
+    try:
+        data = storage.load(storage_key)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="No file found for that storage_key")
+    ext = os.path.splitext(storage_key)[1].lower()
+    media_type = _CONTENT_TYPE_BY_EXT.get(ext, "application/pdf")
+    return Response(
+        content=data,
+        media_type=media_type,
+        headers={"Content-Disposition": f'inline; filename="robinhealth-letter{ext or ".pdf"}"'},
+    )
 
 
 @app.post("/cases/{case_id}/send-letter")

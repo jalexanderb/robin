@@ -32,7 +32,7 @@ the background via create_facility_and_queue_fap_parsing.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 
 import bill_pipeline
 import eob_pipeline
@@ -302,6 +302,12 @@ def process_case_intake(
             mrf_status_detail=mrf_finding.get("status_detail") if mrf_finding else None,
         )
         result = synthesis.synthesize(synthesis_input)
+
+    # Persist the synthesis (as JSONB) so the analysis can be restored later
+    # (e.g. when a patient resumes their case). OutcomeType is a str-Enum, so
+    # asdict() produces a JSON-serializable dict directly.
+    if result is not None and case_id is not None:
+        repository.persist_case_synthesis(case_id, asdict(result))
 
     return CaseIntakeResult(
         bill=bill,

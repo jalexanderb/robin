@@ -46,11 +46,19 @@ SUGGESTED DEFAULTS, NEITHER REQUIRED:
       models of similar size, so one served model can plausibly cover
       every LLM-calling function here (vision and text) instead of
       running two.
-  anthropic -> claude-sonnet-4-6. A reasonable balance of capability and
-      cost for this scaffold's mix of vision extraction and text
-      reasoning tasks -- not the result of benchmarking Claude models
-      against each other for this specific workload. Swap LLM_MODEL
+  anthropic (the default provider) -> claude-opus-4-8. The most capable
+      model, chosen for quality on this scaffold's mix of vision extraction,
+      letter drafting, and patient Q&A. For high-volume bill extraction where
+      cost matters more than the last increment of quality, set
+      LLM_MODEL=claude-sonnet-4-6 -- a one-env-var change. Swap LLM_MODEL
       freely; nothing here depends on this specific one.
+
+ANTHROPIC STRUCTURED OUTPUT:
+  complete_json() on the anthropic path forces a single tool call (tool_choice
+  -> a one-tool "emit_json" schema) and reads the tool input, which the API
+  guarantees is valid JSON. That replaces the regex/think-block scraping the
+  openai_compatible path still needs, which is why the anthropic branch carries
+  none of it.
 
 Configuration (environment variables):
     LLM_PROVIDER   "openai_compatible" (default) or "anthropic"
@@ -108,7 +116,7 @@ import httpx
 
 _DEFAULT_MODEL_BY_PROVIDER = {
     "openai_compatible": "Qwen/Qwen3-VL-32B-Instruct",  # suggested, not required -- see module docstring
-    "anthropic": "claude-sonnet-4-6",  # suggested, not required -- see module docstring
+    "anthropic": "claude-opus-4-8",  # default: most capable model; override via LLM_MODEL (e.g. claude-sonnet-4-6 to cut cost)
 }
 _DEFAULT_BASE_URL_BY_PROVIDER = {
     "openai_compatible": "http://localhost:8000/v1",  # vLLM/Ollama-style local default
@@ -118,7 +126,11 @@ _DEFAULT_ANTHROPIC_API_VERSION = "2023-06-01"
 
 
 def _provider() -> str:
-    return os.environ.get("LLM_PROVIDER", "openai_compatible").strip().lower()
+    # Default to Anthropic: Claude's quality and -- via forced tool-use in
+    # complete_json -- guaranteed-valid structured output are worth it for this
+    # workload (bill extraction, letter drafting, patient Q&A). Set
+    # LLM_PROVIDER=openai_compatible to use a self-hosted/open-weight model.
+    return os.environ.get("LLM_PROVIDER", "anthropic").strip().lower()
 
 
 def _base_url() -> str:
@@ -201,10 +213,6 @@ def _complete_openai_compatible(
     if _api_key():
         headers["Authorization"] = f"Bearer {_api_key()}"
 
-    # Add a system message forcing JSON output for complete_json calls
-    # This is set by the caller via the _force_json kwarg (internal use)
-    force_json = kwargs.pop("_force_json", False) if "kwargs" in dir() else False
-
     body: dict = {
         "model": _model(),
         "messages": messages,
@@ -253,10 +261,32 @@ def _complete_anthropic(
     temperature: float,
 ) -> str:
     """
-    Anthropic's actual Messages API shape (POST {base_url}/v1/messages)
-    -- see module docstring for exactly how this differs from the
-    OpenAI-compatible shape above (system placement, image block shape,
-    auth header, required api-version header).
+    Anthropic Messages API, free-text response. temperature is accepted for
+    signature parity with the openai_compatible path but deliberately NOT
+    forwarded -- the default model (claude-opus-4-8) and the rest of the
+    Opus 4.7+/Fable family reject temperature/top_p/top_k with a 400. Steer
+    determinism via the prompt instead.
+    """
+    data = _anthropic_request(prompt, images, system, max_tokens)
+    blocks = data["content"]
+    return "".join(block["text"] for block in blocks if block.get("type") == "text")
+
+
+def _anthropic_request(
+    prompt: str,
+    images: list[tuple[bytes, str]] | None,
+    system: str | None,
+    max_tokens: int,
+    tools: list[dict] | None = None,
+    tool_choice: dict | None = None,
+) -> dict:
+    """
+    Build and send one Anthropic Messages API request (POST
+    {base_url}/v1/messages), returning the parsed response body. Shared by
+    _complete_anthropic (free text) and _complete_anthropic_json (forced
+    tool call). See module docstring for how this shape differs from the
+    OpenAI-compatible one (system placement, image block shape, auth header,
+    required api-version header).
     """
     content: list[dict] | str
     if images:
@@ -277,20 +307,25 @@ def _complete_anthropic(
     if _api_key():
         headers["x-api-key"] = _api_key()
 
-    body = {
+    # No temperature/top_p/top_k and no thinking config: sampling params 400
+    # on the default model, and thinking is off by default on Opus 4.7+ --
+    # right for deterministic extraction/classification.
+    body: dict = {
         "model": _model(),
         "max_tokens": max_tokens,
-        "temperature": temperature,
         "messages": [{"role": "user", "content": content}],
     }
     if system:
-        # Top-level field, not a message -- the one shape difference
-        # most likely to silently misbehave (rather than cleanly error)
-        # if this were ever accidentally routed through the
-        # openai_compatible builder instead: a "system" message in the
-        # messages array is simply ignored by Anthropic's API rather
-        # than rejected outright.
+        # Top-level field, not a message -- the one shape difference most
+        # likely to silently misbehave (rather than cleanly error) if this
+        # were ever accidentally routed through the openai_compatible builder:
+        # a "system" message in the messages array is ignored by Anthropic's
+        # API rather than rejected.
         body["system"] = system
+    if tools:
+        body["tools"] = tools
+    if tool_choice:
+        body["tool_choice"] = tool_choice
 
     response = httpx.post(
         f"{_base_url()}/v1/messages",
@@ -299,18 +334,72 @@ def _complete_anthropic(
         timeout=120.0,
     )
     response.raise_for_status()
-    blocks = response.json()["content"]
-    return "".join(block["text"] for block in blocks if block.get("type") == "text")
+    return response.json()
+
+
+# Single-tool schema used to force valid JSON out of the Anthropic path. The
+# payload goes under "data" (rather than being the tool input directly)
+# because a forced tool call's input must be a JSON *object*, while some
+# callers (e.g. fap_pipeline.run_compliance_checklist) expect a top-level
+# array -- the "data" envelope carries either shape unchanged.
+_EMIT_JSON_TOOL = {
+    "name": "emit_json",
+    "description": (
+        "Return your answer. Put the complete JSON value the user's "
+        "instructions ask for -- an object or an array, matching the "
+        "requested schema exactly -- as the value of the `data` field. Do "
+        "not rename, wrap, or omit any fields inside it."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {"data": {}},  # empty schema -> any JSON value
+        "required": ["data"],
+    },
+}
+
+
+def _complete_anthropic_json(
+    prompt: str,
+    images: list[tuple[bytes, str]] | None = None,
+    system: str | None = None,
+    max_tokens: int = 2000,
+    **_ignored,
+) -> dict | list:
+    """
+    Anthropic structured output via a forced tool call. The API guarantees the
+    tool input is valid JSON, so there is nothing to scrape, strip, or repair
+    -- the entire fragile text-parsing path in complete_json is bypassed.
+    """
+    data = _anthropic_request(
+        prompt, images, system, max_tokens,
+        tools=[_EMIT_JSON_TOOL],
+        tool_choice={"type": "tool", "name": "emit_json"},
+    )
+    for block in data.get("content", []):
+        if block.get("type") == "tool_use" and block.get("name") == "emit_json":
+            return block["input"]["data"]
+    # Forced tool_choice means we should never get here; treat as a hard error
+    # rather than silently returning something unparseable downstream.
+    raise ValueError("Anthropic response contained no emit_json tool_use block")
 
 
 def complete_json(prompt: str, **kwargs) -> dict | list:
     """
-    Like complete(), but forces JSON output by:
-    1. Adding an explicit system message telling the model to output JSON only
-    2. Stripping <think>...</think> blocks from reasoning models
-    3. Stripping ```json fences
-    4. Finding the first { or [ and parsing from there
+    Return parsed JSON from the configured provider.
+
+    anthropic: forced tool call -> the API guarantees valid JSON (no
+        scraping). See _complete_anthropic_json.
+
+    openai_compatible: open-weight models have no such guarantee, so we coax
+        and repair text output by:
+        1. Adding a system message telling the model to output JSON only
+        2. Stripping <think>...</think> blocks from reasoning models
+        3. Stripping ```json fences
+        4. Scanning for the JSON object/array and parsing it
     """
+    if _provider() == "anthropic":
+        return _complete_anthropic_json(prompt, **kwargs)
+
     import re
 
     # Inject a system message that forces JSON-only output.

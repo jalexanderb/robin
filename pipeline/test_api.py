@@ -686,6 +686,230 @@ def test_send_letter_endpoint_records_contact():
         _execute("DELETE FROM patients WHERE id = %s", (patient_id,))
 
 
+def test_chat_endpoint_returns_llm_reply_and_passes_case_context():
+    """
+    /chat returns the LLM's reply, and folds the supplied case context into
+    the prompt so Robin answers about the user's actual bill.
+    """
+    import json
+    with patch("llm_client.complete", return_value="  Here's what I think.  ") as mock_complete:
+        r = client.post(
+            "/chat",
+            data={
+                "message": "Is this bill too high?",
+                "context_json": json.dumps({
+                    "provider": "Springfield General",
+                    "billed_amount": 4800,
+                    "reasons": ["Charges look above typical negotiated rates."],
+                }),
+            },
+        )
+    assert r.status_code == 200
+    assert r.json()["reply"] == "Here's what I think."  # trimmed
+    # The patient's question and case context both reach the model.
+    prompt = mock_complete.call_args.args[0]
+    assert "Is this bill too high?" in prompt
+    assert "Springfield General" in prompt
+    assert "4800" in prompt
+    # System prompt establishes the Robin persona.
+    assert "Robin" in mock_complete.call_args.kwargs["system"]
+
+
+def test_chat_endpoint_degrades_gracefully_when_llm_unavailable():
+    """A failing LLM must not surface a hard error to the patient."""
+    with patch("llm_client.complete", side_effect=RuntimeError("LLM down")):
+        r = client.post("/chat", data={"message": "How does this work?"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["degraded"] is True
+    assert "upload your bill" in body["reply"].lower()
+
+
+def test_chat_endpoint_rejects_empty_message():
+    r = client.post("/chat", data={"message": "   "})
+    assert r.status_code == 400
+
+
+def test_draft_letter_blocked_when_extraction_confidence_low():
+    """A low/failed-confidence extraction must not be turned into a letter."""
+    patient_id = repository.insert_patient()
+    case_id = repository.insert_case(patient_id)
+    try:
+        with patch("repository.fetch_bill_parsing_confidence", return_value="low"):
+            r = client.post(
+                f"/cases/{case_id}/draft-letter",
+                data={
+                    "patient_name": "Jane Doe",
+                    "facility_name": "General Hospital",
+                    "billed_amount": "5000.0",
+                },
+            )
+        assert r.status_code == 409, r.json()
+        assert r.json()["detail"]["error"] == "low_confidence_extraction"
+    finally:
+        _execute("DELETE FROM cases WHERE id = %s", (case_id,))
+        _execute("DELETE FROM patients WHERE id = %s", (patient_id,))
+
+
+def test_set_plan_endpoint_updates_and_validates():
+    """Patient can switch to membership; an unknown plan is a 400."""
+    patient_id = repository.insert_patient()
+    try:
+        r = client.post(f"/patients/{patient_id}/plan", data={"plan": "membership"})
+        assert r.status_code == 200, r.json()
+        assert r.json()["plan"] == "membership"
+        bad = client.post(f"/patients/{patient_id}/plan", data={"plan": "free_lol"})
+        assert bad.status_code == 400
+    finally:
+        _execute("DELETE FROM patients WHERE id = %s", (patient_id,))
+
+
+def test_membership_plan_waives_savings_fee_on_outcome():
+    """On membership, RobinHealth takes 0% of savings (the flat $20/mo applies instead)."""
+    import outcome_pipeline as op
+    patient_id = repository.insert_patient()
+    case_id = repository.insert_case(patient_id)
+    try:
+        op.record_fee_agreement(patient_id)
+        op.set_patient_plan(patient_id, "membership")
+        with TestClient(app) as c:
+            c.post(f"/cases/{case_id}/negotiate", data={"billed_amount": "5000.0", "target_amount": "2000.0"})
+            r = c.post(f"/cases/{case_id}/outcome", data={"agreed_amount": "2000.0"})
+        assert r.status_code == 200, r.json()
+        body = r.json()
+        assert body["amount_saved"] == 3000.0
+        assert body["robinhealth_fee"] == 0.0
+        assert body["patient_net_savings"] == 3000.0
+        assert body["plan"] == "membership"
+    finally:
+        _execute("DELETE FROM negotiations WHERE case_id = %s", (case_id,))
+        _execute("DELETE FROM cases WHERE id = %s", (case_id,))
+        _execute("DELETE FROM patients WHERE id = %s", (patient_id,))
+
+
+def test_contingency_fee_is_capped_at_1000_on_large_bill():
+    """A large negotiated saving caps the contingency fee at $1,000, not 20%."""
+    import outcome_pipeline as op
+    patient_id = repository.insert_patient()
+    case_id = repository.insert_case(patient_id)
+    try:
+        op.record_fee_agreement(patient_id)  # default plan = contingency
+        with TestClient(app) as c:
+            c.post(f"/cases/{case_id}/negotiate", data={"billed_amount": "80000.0", "target_amount": "30000.0"})
+            r = c.post(f"/cases/{case_id}/outcome", data={"agreed_amount": "30000.0"})
+        assert r.status_code == 200, r.json()
+        body = r.json()
+        assert body["amount_saved"] == 50000.0
+        assert body["robinhealth_fee"] == 1000.0
+        assert body["patient_net_savings"] == 49000.0
+    finally:
+        _execute("DELETE FROM negotiations WHERE case_id = %s", (case_id,))
+        _execute("DELETE FROM cases WHERE id = %s", (case_id,))
+        _execute("DELETE FROM patients WHERE id = %s", (patient_id,))
+
+
+def test_letter_download_endpoint_serves_pdf():
+    """The drafted-letter PDF is retrievable by storage_key with the right content type."""
+    import storage
+    key = storage.save(b"%PDF-1.4 fake letter bytes", "application/pdf")
+    r = client.get(f"/letters/{key}")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/pdf"
+    assert r.content == b"%PDF-1.4 fake letter bytes"
+
+
+def test_letter_download_endpoint_rejects_bad_key_and_missing_file():
+    # Malformed key -> 400 (path-traversal-safe shape check)
+    assert client.get("/letters/not-a-key").status_code == 400
+    assert client.get("/letters/..%2f..%2fetc%2fpasswd").status_code == 400
+    # Well-formed but nonexistent -> 404
+    assert client.get(f"/letters/{'a' * 64}.pdf").status_code == 404
+
+
+def test_draft_letter_then_download_round_trips():
+    """End-to-end: draft a letter, then fetch the returned storage_key as a PDF."""
+    patient_id = repository.insert_patient()
+    case_id = repository.insert_case(patient_id)
+    try:
+        with TestClient(app) as c:
+            draft = c.post(
+                f"/cases/{case_id}/draft-letter",
+                data={
+                    "patient_name": "Jane Doe",
+                    "facility_name": "General Hospital",
+                    "billed_amount": "5000.0",
+                },
+            )
+            assert draft.status_code == 200, draft.json()
+            storage_key = draft.json()["storage_key"]
+            got = c.get(f"/letters/{storage_key}")
+        assert got.status_code == 200
+        assert got.headers["content-type"] == "application/pdf"
+        assert got.content[:4] == b"%PDF"
+    finally:
+        _execute("DELETE FROM cases WHERE id = %s", (case_id,))
+        _execute("DELETE FROM patients WHERE id = %s", (patient_id,))
+
+
+def test_appeal_letter_endpoint_produces_pdf():
+    """The insurer appeal endpoint renders a PDF and returns a retrievable storage_key."""
+    patient_id = repository.insert_patient()
+    case_id = repository.insert_case(patient_id)
+    try:
+        with TestClient(app) as c:
+            r = c.post(
+                f"/cases/{case_id}/appeal-letter",
+                data={
+                    "patient_name": "Jane Doe",
+                    "insurer_name": "Acme Health Insurance",
+                    "claim_number": "CLM-123",
+                    "date_of_service": "2026-03-14",
+                    "denial_reason": "not medically necessary",
+                },
+            )
+            assert r.status_code == 200, r.json()
+            body = r.json()
+            assert body["reference_number"].startswith("RH-")
+            assert body["pdf_size_bytes"] > 1000
+            got = c.get(f"/letters/{body['storage_key']}")
+        assert got.status_code == 200
+        assert got.content[:4] == b"%PDF"
+    finally:
+        _execute("DELETE FROM cases WHERE id = %s", (case_id,))
+        _execute("DELETE FROM patients WHERE id = %s", (patient_id,))
+
+
+def test_case_full_returns_bill_and_synthesis_for_resume():
+    """GET /cases/{id}/full returns the persisted bill + synthesis so a session can resume."""
+    patient_id = repository.insert_patient()
+    case_id = repository.insert_case(patient_id)
+    bill = BillExtraction(
+        provider=ExtractedProviderInfo(name="General Hospital", npi=None, tax_id=None, address=None, state="CA"),
+        date_of_service="2026-03-14", account_number="ACC-1",
+        line_items=[ExtractedLineItem(line_number=1, description="Office visit", procedure_code="99213", code_type="cpt", units=1, billed_amount=300.0)],
+        total_billed_amount=300.0, parsing_confidence="high", raw_text=None,
+    )
+    try:
+        repository.persist_bill(case_id, bill)
+        repository.persist_case_synthesis(case_id, {
+            "headline_low": 120.0, "headline_high": 300.0, "headline_could_eliminate": False,
+            "reasons": [{"outcome_type": "partial_reduction", "summary": "Above typical rates."}],
+            "follow_up_questions": [], "beta_caveat": "",
+        })
+        r = client.get(f"/cases/{case_id}/full")
+        assert r.status_code == 200, r.json()
+        body = r.json()
+        assert body["bill"]["total_billed_amount"] == 300.0
+        assert body["bill"]["provider"]["name"] == "General Hospital"
+        assert body["bill"]["line_items"][0]["procedure_code"] == "99213"
+        assert body["synthesis"]["headline_low"] == 120.0
+        assert body["synthesis"]["reasons"][0]["outcome_type"] == "partial_reduction"
+    finally:
+        _execute("DELETE FROM bills WHERE case_id = %s", (case_id,))
+        _execute("DELETE FROM cases WHERE id = %s", (case_id,))
+        _execute("DELETE FROM patients WHERE id = %s", (patient_id,))
+
+
 if __name__ == "__main__":
     import sys
     import traceback

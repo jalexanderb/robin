@@ -61,6 +61,55 @@ class FeeAgreementRequired(Exception):
 
 
 # ============================================================
+# Pricing
+# ============================================================
+#
+# Two plans, and the patient picks whichever costs them less -- a deliberate
+# "you'll never pay more than $50/month, or 20% of what we save you" ceiling:
+#
+#   contingency (default): 20% of savings, CAPPED at $1,000, nothing if we
+#       save nothing. No commitment -- right for a one-off, single bill.
+#   membership: a flat $50/month and we take 0% of your savings. Free until
+#       your first win, cancel anytime -- right for ongoing / multiple bills.
+#
+# The cap matches the market (Goodbill, CareRoute both cap at $1,000) and the
+# membership undercuts it for any sizable win. This intentionally trades
+# per-win upside for trust, volume, and recurring revenue.
+#
+# NOTE: actually charging the $50/month (and the "free until first win" /
+# "pause when no active cases" mechanics) belongs to a billing integration
+# (e.g. Stripe) that isn't wired here. This module owns only what RobinHealth
+# takes out of a patient's *savings*, which membership sets to zero.
+
+FEE_PERCENTAGE = 0.20
+FEE_CAP_USD = 1000.0               # max contingency fee on a single bill
+MEMBERSHIP_MONTHLY_PRICE_USD = 50.0
+
+PLAN_CONTINGENCY = "contingency"
+PLAN_MEMBERSHIP = "membership"
+VALID_PLANS = (PLAN_CONTINGENCY, PLAN_MEMBERSHIP)
+DEFAULT_PLAN = PLAN_CONTINGENCY
+
+
+def compute_robinhealth_fee(amount_saved: float | None, plan: str) -> float:
+    """
+    What RobinHealth charges out of a patient's savings, by plan.
+
+      membership  -> 0.0 (members pay the flat monthly fee instead; we never
+                     take a cut of their savings)
+      contingency -> 20% of savings, capped at $1,000; 0 if nothing was saved
+
+    Pure function -- no DB, no rounding surprises -- so it's unit-testable and
+    is the single source of truth for the fee everywhere it's surfaced.
+    """
+    if not amount_saved or amount_saved <= 0:
+        return 0.0
+    if plan == PLAN_MEMBERSHIP:
+        return 0.0
+    return min(round(amount_saved * FEE_PERCENTAGE, 2), FEE_CAP_USD)
+
+
+# ============================================================
 # Dataclasses
 # ============================================================
 
@@ -85,6 +134,7 @@ class NegotiationSummary:
     agreed_at: str | None
     paid_at: str | None
     contacts: list[dict]             # list of negotiation_contacts rows
+    plan: str = DEFAULT_PLAN         # billing plan the fee figures reflect
 
 
 @dataclass
@@ -98,9 +148,10 @@ class OutcomeReceipt:
     agreed_amount: float
     amount_saved: float
     savings_pct: float              # amount_saved / original * 100
-    robinhealth_fee: float          # 20% of savings
-    patient_net_savings: float      # 80% of savings
+    robinhealth_fee: float          # contingency: 20% of savings, capped at $1,000; membership: 0
+    patient_net_savings: float      # amount_saved - robinhealth_fee
     status: str                     # 'agreed' or 'paid'
+    plan: str = DEFAULT_PLAN        # which plan the fee was computed under
 
 
 # ============================================================
@@ -345,11 +396,15 @@ def record_outcome(
     if paid:
         _update_case_status(case_id, "resolved")
 
+    plan = _plan_for_case(case_id)
     original_f = float(result["original_billed_amount"])
     agreed_f = float(result["agreed_amount"])
     saved_f = float(result["amount_saved"])
-    fee_f = float(result["robinhealth_fee"])
-    net_f = float(result["patient_net_savings"])
+    # Fee is computed in Python (plan-aware: capped contingency, or 0 for
+    # members) rather than read from the DB's generated robinhealth_fee
+    # column, which only knows the raw, uncapped 20%.
+    fee_f = compute_robinhealth_fee(saved_f, plan)
+    net_f = round(saved_f - fee_f, 2)
 
     return OutcomeReceipt(
         negotiation_id=negotiation_id,
@@ -360,6 +415,7 @@ def record_outcome(
         robinhealth_fee=fee_f,
         patient_net_savings=net_f,
         status=result["status"],
+        plan=plan,
     )
 
 
@@ -478,6 +534,13 @@ def fetch_negotiation_for_case(case_id: str) -> NegotiationSummary | None:
     def _s(v):
         return v.isoformat() if v is not None else None
 
+    # Recompute the fee in Python so the cap and membership (0%) are reflected,
+    # rather than echoing the DB's raw-20% generated columns.
+    plan = _plan_for_case(str(neg_row["case_id"]))
+    saved = _f(neg_row["amount_saved"])
+    fee = compute_robinhealth_fee(saved, plan) if saved is not None else None
+    net = round(saved - fee, 2) if saved is not None else None
+
     return NegotiationSummary(
         negotiation_id=str(neg_row["id"]),
         case_id=str(neg_row["case_id"]),
@@ -486,9 +549,9 @@ def fetch_negotiation_for_case(case_id: str) -> NegotiationSummary | None:
         target_amount=_f(neg_row["target_amount"]),
         counter_offer_amount=_f(neg_row["counter_offer_amount"]),
         agreed_amount=_f(neg_row["agreed_amount"]),
-        amount_saved=_f(neg_row["amount_saved"]),
-        robinhealth_fee=_f(neg_row["robinhealth_fee"]),
-        patient_net_savings=_f(neg_row["patient_net_savings"]),
+        amount_saved=saved,
+        robinhealth_fee=fee,
+        patient_net_savings=net,
         provider_response_text=neg_row["provider_response_text"],
         first_contacted_at=_s(neg_row["first_contacted_at"]),
         agreed_at=_s(neg_row["agreed_at"]),
@@ -506,6 +569,7 @@ def fetch_negotiation_for_case(case_id: str) -> NegotiationSummary | None:
             }
             for c in contacts
         ],
+        plan=plan,
     )
 
 
@@ -523,7 +587,11 @@ def fetch_outcomes_summary() -> dict:
                     COUNT(*) FILTER (WHERE status = 'paid') AS total_paid,
                     COUNT(*) FILTER (WHERE status = 'rejected') AS total_rejected,
                     SUM(amount_saved) FILTER (WHERE status IN ('agreed', 'paid')) AS total_saved,
-                    SUM(robinhealth_fee) FILTER (WHERE status IN ('agreed', 'paid')) AS total_fees,
+                    -- Cap each fee at $1,000 (the generated column is the raw,
+                    -- uncapped 20%). This reflects contingency only; members'
+                    -- savings fee is $0, so this slightly overstates fees until
+                    -- subscription billing is reconciled here per-plan.
+                    SUM(LEAST(robinhealth_fee, 1000)) FILTER (WHERE status IN ('agreed', 'paid')) AS total_fees,
                     AVG(amount_saved / NULLIF(original_billed_amount, 0) * 100)
                         FILTER (WHERE status IN ('agreed', 'paid')) AS avg_savings_pct,
                     AVG(
@@ -1345,41 +1413,47 @@ def _fetch_negotiation_by_id(negotiation_id: str) -> "NegotiationSummary | None"
 # The canonical fee terms text shown to patients. Versioned so we can
 # tell exactly what a patient agreed to even if terms change later.
 # This is the authoritative copy; the API endpoint returns it verbatim.
-FEE_TERMS_VERSION = "v1.0"
+FEE_TERMS_VERSION = "v2.0"
 
-FEE_TERMS_TEXT = """RobinHealth Fee Agreement — Version 1.0
+FEE_TERMS_TEXT = """RobinHealth Fee Agreement — Version 2.0
 
 WHAT WE DO
 RobinHealth analyzes your medical bills and, if you choose to proceed,
-negotiates with the provider on your behalf to reduce what you owe.
+works on your behalf — through financial-assistance applications,
+error corrections, insurance appeals, and negotiation — to reduce what
+you owe.
 
-OUR FEE
-If we successfully reduce your bill, you pay RobinHealth 20% of the
-amount saved.
+HOW YOU PAY — YOU CHOOSE
+You'll never pay more than $50 a month, or 20% of what we save you.
+Pick whichever is cheaper for you:
 
-Example: If your bill is $5,000 and we negotiate it down to $2,000,
-you save $3,000. Our fee is 20% of $3,000 = $600. You pay the
-provider $2,000 and pay RobinHealth $600. Your total cost is $2,600
-instead of $5,000 — a net saving of $2,400.
+  1) Pay-per-win — 20% of the amount we save you, capped at $1,000 per
+     bill. No upfront cost. If we don't save you anything, you pay
+     nothing.
+
+  2) Membership — a flat $50 per month, and we take 0% of your savings,
+     no matter how large. It's free until we get your first win, and you
+     can cancel any time.
+
+Example (pay-per-win): If your bill is $5,000 and we get it reduced to
+$2,000, you save $3,000. Our fee is 20% of $3,000 = $600. On a much
+larger bill the fee is still capped at $1,000. On Membership, your
+savings fee on that same bill is $0 — you'd just pay your $50/month.
 
 IF WE DON'T SAVE YOU ANYTHING
-You owe us nothing. Our fee only applies when we achieve a real,
-documented reduction in your bill. If the provider refuses to
-negotiate or doesn't reduce the amount, there is no fee.
-
-WHEN YOU PAY
-The fee becomes due once you and the provider have agreed on a
-reduced amount. We will send you an invoice at that time.
+On pay-per-win you owe us nothing — our fee only applies when we achieve
+a real, documented reduction. On Membership you aren't charged until
+your first win.
 
 YOUR AUTHORIZATION
-By accepting these terms, you authorize RobinHealth to communicate
-with your healthcare provider on your behalf regarding this bill.
-You remain responsible for reviewing any agreements we reach and
-confirming them before payment.
+By accepting these terms, you authorize RobinHealth to communicate with
+your healthcare provider and, where applicable, your insurer on your
+behalf regarding this bill. You remain responsible for reviewing any
+agreements we reach and confirming them before payment.
 
-To proceed, you must confirm that you have read and understood
-these terms. You can withdraw from the negotiation at any time
-before an agreement is reached, with no fee owed.
+To proceed, you must confirm that you have read and understood these
+terms. You can withdraw at any time before an agreement is reached, with
+no fee owed.
 """
 
 
@@ -1388,10 +1462,32 @@ def get_fee_terms() -> dict:
     return {
         "version": FEE_TERMS_VERSION,
         "text": FEE_TERMS_TEXT,
+        # Pay-per-win (contingency) figures -- kept as the top-level fields for
+        # backward compatibility; the full plan menu is under "plans".
         "fee_percentage": 20,
         "fee_basis": "savings",
         "fee_due_when": "upon_agreement",
         "no_cure_no_fee": True,
+        "fee_cap_usd": FEE_CAP_USD,
+        "membership_monthly_usd": MEMBERSHIP_MONTHLY_PRICE_USD,
+        "plans": [
+            {
+                "id": PLAN_CONTINGENCY,
+                "label": "Pay-per-win",
+                "summary": f"20% of savings, capped at ${int(FEE_CAP_USD):,}. Nothing if we save you nothing.",
+                "fee_percentage": 20,
+                "fee_cap_usd": FEE_CAP_USD,
+                "monthly_usd": 0,
+            },
+            {
+                "id": PLAN_MEMBERSHIP,
+                "label": "Membership",
+                "summary": f"${int(MEMBERSHIP_MONTHLY_PRICE_USD)}/month flat, 0% of your savings. Free until your first win, cancel anytime.",
+                "fee_percentage": 0,
+                "fee_cap_usd": None,
+                "monthly_usd": MEMBERSHIP_MONTHLY_PRICE_USD,
+            },
+        ],
     }
 
 
@@ -1451,3 +1547,45 @@ def check_fee_agreement(patient_id: str) -> dict:
         "current_terms_version": FEE_TERMS_VERSION,
         "terms_current": version == FEE_TERMS_VERSION if version else False,
     }
+
+
+# ============================================================
+# Plan selection (contingency vs. membership)
+# ============================================================
+
+def get_patient_plan(patient_id: str) -> str:
+    """Return the patient's billing plan, defaulting to contingency."""
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT plan FROM patients WHERE id = %s", (patient_id,))
+            row = cur.fetchone()
+    if row is None:
+        raise ValueError(f"No patient found with id={patient_id!r}")
+    return row[0] or DEFAULT_PLAN
+
+
+def set_patient_plan(patient_id: str, plan: str) -> None:
+    """Set the patient's billing plan. Raises ValueError on an unknown plan."""
+    if plan not in VALID_PLANS:
+        raise ValueError(f"Unknown plan {plan!r}; expected one of {VALID_PLANS}")
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE patients SET plan = %s, updated_at = now() WHERE id = %s",
+                (plan, patient_id),
+            )
+            if cur.rowcount == 0:
+                raise ValueError(f"No patient found with id={patient_id!r}")
+
+
+def _plan_for_case(case_id: str) -> str:
+    """Resolve the billing plan for whoever owns this case."""
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT p.plan FROM patients p "
+                "JOIN cases c ON c.patient_id = p.id WHERE c.id = %s",
+                (case_id,),
+            )
+            row = cur.fetchone()
+    return (row[0] if row else None) or DEFAULT_PLAN
