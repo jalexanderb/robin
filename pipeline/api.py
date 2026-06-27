@@ -262,6 +262,13 @@ def _load_rate_table(env_var: str, source: BenchmarkSource) -> RateTable:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Optional self-setup: apply the DB schema on boot when AUTO_MIGRATE is set.
+    # Idempotent (see migrate.py) -- makes first-time cloud deploys one-step.
+    if os.environ.get("AUTO_MIGRATE", "").strip().lower() in ("1", "true", "yes"):
+        logger.info("AUTO_MIGRATE set -- applying database schema")
+        import migrate
+        migrate.run_migrations()
+
     # Connection pool
     logger.info("Initialising DB connection pool")
     db.init_pool()

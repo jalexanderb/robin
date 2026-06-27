@@ -14,18 +14,28 @@ Two pieces deploy independently:
 
 ## 1. Database
 
-Provision a Postgres 16 instance, then apply the schema **in this order**
-(`bills_schema.sql` references tables created in `schema.sql`):
+Provision a Postgres 16 instance and set `DATABASE_URL` on the API. Then apply
+the schema — easiest first:
 
+**Option A (recommended): let the API set itself up.** Set `AUTO_MIGRATE=true`
+on the API service. On boot it applies the schema (idempotently) — no manual
+step. You can leave it on or remove it after the first successful deploy.
+
+**Option B: run the script once.**
+```bash
+cd pipeline && python migrate.py    # uses DATABASE_URL
+```
+
+**Option C: apply by hand**, in this order (`bills_schema.sql` references
+tables created in `schema.sql`):
 ```bash
 psql "$DATABASE_URL" -f db/schema.sql
 psql "$DATABASE_URL" -f db/jobs_schema.sql
 psql "$DATABASE_URL" -f db/bills_schema.sql
 ```
 
-`bills_schema.sql` is additive and idempotent (`ADD COLUMN IF NOT EXISTS`), so
-re-running it to pick up this build's new columns (`patients.plan`,
-`cases.synthesis_json`) is safe on an existing database.
+All paths are safe to re-run; the new columns this build adds
+(`patients.plan`, `cases.synthesis_json`) come from `bills_schema.sql`.
 
 ---
 
@@ -36,6 +46,7 @@ Build from the repo root `Dockerfile`. Required environment variables:
 | Variable | Value / notes |
 |----------|---------------|
 | `DATABASE_URL` | full Postgres DSN, e.g. `postgresql://user:pass@host:5432/db` |
+| `AUTO_MIGRATE` | `true` to auto-apply the schema on boot (see step 1, option A) |
 | `LLM_PROVIDER` | `anthropic` (the default if unset) |
 | `ANTHROPIC_API_KEY` | your Anthropic key (default provider is Claude) |
 | `LLM_MODEL` | `claude-opus-4-8` (default) — or `claude-sonnet-4-6` to cut cost |
