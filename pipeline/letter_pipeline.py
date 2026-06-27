@@ -187,23 +187,32 @@ def assemble_context(
 # ============================================================
 
 LETTER_PROMPT = """\
-You are drafting a formal letter on behalf of a patient, sent by \
-RobinHealth (a billing advocacy service acting as the patient's \
-authorized representative), to a healthcare provider's billing \
-department.
+You are drafting a formal medical-bill dispute/negotiation letter on behalf \
+of a patient, sent by RobinHealth (a billing-advocacy service acting as the \
+patient's authorized representative) to a healthcare provider's billing \
+department. The goal is a letter that is professional and respectful but \
+firm and well-supported -- one a billing department must take seriously.
 
-The letter should:
-- Be professional, factual, and free of hostility or accusatory language \
--- the arguments below are framed as observations and requests, not \
-accusations.
-- Identify the patient/account using the recipient details provided.
-- Present each argument below as a distinct, clearly stated point.
-- State a specific, concrete request (the requested resolution provided \
-below).
-- Request a written response within the deadline provided, and note that \
-RobinHealth is the patient's authorized representative for this account.
-- NOT include a signature block, letterhead, or date -- those are added \
-by the calling system. Begin directly with the salutation.
+The letter MUST:
+- Open by identifying RobinHealth as the patient's authorized representative \
+and the account it concerns (use the recipient details).
+- Present EACH argument below as its own clearly stated, numbered point. \
+Preserve the specific legal citations and dollar figures exactly as given -- \
+do not soften them, drop them, or invent any new citations or numbers.
+- Frame every point as a factual observation and a lawful request, never a \
+threat or an accusation.
+- State the requested resolution clearly and prominently as the bottom line.
+- Request a written, itemized response within the deadline, and ask that \
+collection activity be paused while the account is under review.
+- Include one brief, matter-of-fact sentence noting that if the account is \
+not resolved the patient may seek review by the appropriate oversight bodies \
+(for example, the state attorney general's office, the state insurance \
+regulator, or CMS / the federal No Surprises Help Desk) -- stated as the \
+patient's available options, not as a threat.
+- NOT include a signature block, letterhead, or date -- those are added by \
+the calling system. Begin directly with the salutation.
+
+Keep it to a tight single page, and lead with the strongest arguments.
 
 RECIPIENT:
 Facility: {facility_name}
@@ -214,7 +223,7 @@ Date of service: {date_of_service}
 
 BILLED AMOUNT: ${billed_amount:,.2f}
 
-ARGUMENTS:
+ARGUMENTS (use all of these; keep the citations and figures verbatim):
 {arguments_block}
 
 REQUESTED RESOLUTION: {resolution_block}

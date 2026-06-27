@@ -89,12 +89,14 @@ from slowapi.util import get_remote_address
 import case_pipeline
 import db
 import delivery_pipeline
+import legal_leverage
 import letter_pipeline
 import llm_client
 import outcome_pipeline
 import pricing_pipeline
 import repository
 import storage
+import synthesis
 from pricing_pipeline import BenchmarkSource, RateTable
 
 
@@ -869,6 +871,13 @@ async def draft_letter(
     letter_type: str = Form("initial"),  # "initial" | "followup"
     followup_context_json: Optional[str] = Form(None),
     round_number: int = Form(1),
+    # Optional patient-provided facts that unlock statutory leverage in the
+    # initial letter. Each is "yes" | "no" | "unsure"/absent.
+    emergency: Optional[str] = Form(None),
+    out_of_network: Optional[str] = Form(None),
+    received_itemized: Optional[str] = Form(None),
+    self_pay: Optional[str] = Form(None),
+    good_faith_estimate: Optional[str] = Form(None),
 ) -> JSONResponse:
     """
     Draft and render a negotiation letter to PDF.
@@ -928,34 +937,61 @@ async def draft_letter(
                 round_number=round_number,
             )
         else:
-            # Initial letter: try LLM drafting, fall back to template if unreachable.
-            # The template produces a professional letter covering the core arguments
-            # without requiring an LLM call -- useful in dev/sandbox environments.
+            # Initial letter. Build it from the patient's REAL analysis
+            # (persisted synthesis: FAP eligibility, 501(r) gaps, pricing
+            # benchmarks, EOB allowed-amounts), falling back to a generic
+            # reduction argument only if no synthesis was stored.
             from synthesis import SynthesisResult, Reason, OutcomeType
-            target = round(billed_amount * 0.40, 2)
-            minimal_reason = Reason(
-                outcome_type=OutcomeType.PARTIAL_REDUCTION,
-                summary=(
-                    f"The billed amount of ${billed_amount:,.2f} appears substantially "
-                    f"above Medicare and typical negotiated rates for these services."
-                ),
-                estimated_low=target,
-                estimated_high=billed_amount,
-                source_requirement_codes=[],
-            )
-            minimal_synthesis = SynthesisResult(
-                headline_low=target,
-                headline_high=billed_amount,
-                headline_could_eliminate=False,
-                reasons=[minimal_reason],
-                follow_up_questions=[],
-                beta_caveat="",
-            )
+            stored = repository.fetch_case_synthesis(case_id)
+            if stored:
+                synthesis_result = synthesis.synthesis_from_dict(stored)
+            else:
+                target = round(billed_amount * 0.40, 2)
+                synthesis_result = SynthesisResult(
+                    headline_low=target,
+                    headline_high=billed_amount,
+                    headline_could_eliminate=False,
+                    reasons=[Reason(
+                        outcome_type=OutcomeType.PARTIAL_REDUCTION,
+                        summary=(
+                            f"The billed amount of ${billed_amount:,.2f} appears substantially "
+                            f"above Medicare and typical negotiated rates for these services."
+                        ),
+                        estimated_low=target,
+                        estimated_high=billed_amount,
+                        source_requirement_codes=[],
+                    )],
+                    follow_up_questions=[],
+                    beta_caveat="",
+                )
+
             context = letter_pipeline.assemble_context(
-                synthesis_result=minimal_synthesis,
+                synthesis_result=synthesis_result,
                 recipient=recipient,
                 billed_amount=billed_amount,
             )
+
+            # Layer in statutory leverage from the patient's answers (No
+            # Surprises Act, price transparency, itemized-bill rights). 501(r)
+            # is left to the synthesis above to avoid double-citing.
+            def _yn(v):
+                if v is None:
+                    return None
+                return v.strip().lower() in ("yes", "true", "1", "y")
+            leverage = legal_leverage.build_leverage_arguments(
+                emergency=_yn(emergency),
+                out_of_network=_yn(out_of_network),
+                received_itemized=_yn(received_itemized),
+                self_pay=_yn(self_pay),
+                good_faith_estimate=_yn(good_faith_estimate),
+            )
+            for la in leverage:
+                context.arguments.append(letter_pipeline.LetterArgument(
+                    outcome_type=OutcomeType.PROCEDURAL_LEVERAGE,
+                    text=la.text,
+                    requested_amount=None,
+                    source_requirement_codes=[],
+                ))
             # Try LLM draft; fall back to a template body only if the LLM
             # endpoint is unreachable or errors at the HTTP layer. Other
             # failures (config, parsing, bugs) propagate to the outer handler

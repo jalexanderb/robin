@@ -335,6 +335,8 @@ export default function App() {
   const [billFile, setBillFile] = useState(null);   // held until we have income/EOB, then sent to /intake
   const [eobFile, setEobFile] = useState(null);     // optional EOB (insured patients)
   const [pendingLetterKind, setPendingLetterKind] = useState(null); // 'provider' | 'insurer' (which letter we're collecting for)
+  const [letterFacts, setLetterFacts] = useState({}); // answers that unlock statutory leverage
+  const [factStep, setFactStep] = useState(0);
   const [lastLetter, setLastLetter] = useState(null);        // { storageKey, reference }
   const [negotiationStarted, setNegotiationStarted] = useState(false);
   const [pendingChannel, setPendingChannel] = useState(null); // 'letter_email' | 'letter_fax'
@@ -458,10 +460,11 @@ export default function App() {
   // live case + billed amount; falls back to a client-side text draft for the
   // demo or if the API is unreachable. nameOverride avoids reading stale state
   // right after setPatientName.
-  const draftLetter = async (nameOverride) => {
+  const draftLetter = async (nameOverride, facts) => {
     const bill = billResult?.bill;
     const billed = bill?.total_billed_amount;
     const isDemo = !caseId || caseId === "demo-case-001";
+    const f = facts || letterFacts || {};
 
     await robinSay("Drafting your letter now…", 400);
 
@@ -475,6 +478,12 @@ export default function App() {
         if (bill?.date_of_service) fd.append("date_of_service", bill.date_of_service);
         if (bill?.provider?.address) fd.append("facility_address", bill.provider.address);
         fd.append("letter_type", "initial");
+        // Statutory-leverage facts (No Surprises Act, itemized bill, GFE).
+        if (f.emergency) fd.append("emergency", f.emergency);
+        if (f.out_of_network) fd.append("out_of_network", f.out_of_network);
+        if (f.received_itemized) fd.append("received_itemized", f.received_itemized);
+        if (f.good_faith_estimate) fd.append("good_faith_estimate", f.good_faith_estimate);
+        if (insuranceStatus === "uninsured") fd.append("self_pay", "yes");
 
         const resp = await apiFetch(`${API_BASE}/cases/${caseId}/draft-letter`, { method: "POST", body: fd });
         if (resp.status === 409) {
@@ -512,6 +521,39 @@ export default function App() {
     setStage("done");
   };
 
+  // ── A few quick questions that unlock legal leverage in the letter ────────
+  const letterFactQuestions = () => {
+    const qs = [
+      { key: "emergency", q: "A couple of quick questions to make your letter stronger. Was this care for an emergency (ER or an urgent situation)?" },
+      { key: "out_of_network", q: "Was any provider out-of-network, or did you get a surprise bill you weren't expecting?" },
+      { key: "received_itemized", q: "Did you receive a fully itemized bill — every charge listed with its codes?" },
+    ];
+    if (insuranceStatus === "uninsured") {
+      qs.push({ key: "good_faith_estimate", q: "Before your care, did the provider give you a written Good Faith Estimate of the cost?" });
+    }
+    return qs;
+  };
+  const beginLetterFacts = async () => {
+    setLetterFacts({});
+    setFactStep(0);
+    await robinSay(letterFactQuestions()[0].q, 500);
+    setStage("ask_letter_facts");
+  };
+  const answerFact = async (value) => {
+    const qs = letterFactQuestions();
+    const cur = qs[factStep];
+    userSay(value === "yes" ? "Yes" : value === "no" ? "No" : "Not sure");
+    const updated = { ...letterFacts, [cur.key]: value };
+    setLetterFacts(updated);
+    const next = factStep + 1;
+    if (next < qs.length) {
+      setFactStep(next);
+      await robinSay(qs[next].q, 400);
+    } else {
+      await draftLetter(patientName, updated);
+    }
+  };
+
   // ── Letter routing: provider dispute vs. insurer appeal ───────────────────
   const startProviderLetter = async () => {
     setPendingLetterKind("provider");
@@ -519,7 +561,7 @@ export default function App() {
       await robinSay("Sure. What name should I put on the letter? (The patient name the provider will see.)", 500);
       setStage("ask_name");
     } else {
-      await draftLetter();
+      await beginLetterFacts();
     }
   };
   const startInsurerAppeal = async () => {
@@ -1138,8 +1180,16 @@ This letter was prepared with assistance from Robin (robinhealth.com), an AI-ena
       if (pendingLetterKind === "insurer") {
         await askInsurerName();
       } else {
-        await draftLetter(name);
+        await beginLetterFacts();
       }
+      return;
+    }
+
+    if (stage === "ask_letter_facts") {
+      if (lower.includes("yes") || lower.includes("yeah") || lower.includes("yep")) await answerFact("yes");
+      else if (lower.includes("no") || lower.includes("nope") || lower.includes("didn't") || lower.includes("dont") || lower.includes("don't")) await answerFact("no");
+      else if (lower.includes("not sure") || lower.includes("unsure") || lower.includes("idk") || lower.includes("maybe")) await answerFact("unsure");
+      else await robinSay("Just tap Yes, No, or Not sure above. 🙂", 400);
       return;
     }
 
@@ -1250,6 +1300,8 @@ This letter was prepared with assistance from Robin (robinhealth.com), an AI-ena
         setBillFile(null);
         setEobFile(null);
         setPendingLetterKind(null);
+        setLetterFacts({});
+        setFactStep(0);
       } else if (lower.includes("respond") || lower.includes("replied") || lower.includes("reply") || lower.includes("heard back") || lower.includes("they said") || lower.includes("offer") || lower.includes("denied") || lower.includes("counter") || lower.includes("collections")) {
         askForResponse();
       } else if (lower.includes("record") || lower.includes("final amount") || lower.includes("agreed") || lower.includes("settled") || lower.includes("paid")) {
@@ -1338,6 +1390,18 @@ This letter was prepared with assistance from Robin (robinhealth.com), an AI-ena
             style={{ background: "none", border: "none", color: "#9A9A9A", fontSize: 12, textDecoration: "underline", cursor: "pointer", alignSelf: "flex-start", padding: "2px" }}>
             Read the full terms
           </button>
+        </div>
+      )}
+
+      {/* Yes / No / Not sure chips for the letter-strengthening questions */}
+      {stage === "ask_letter_facts" && (
+        <div style={{ padding: "0 16px 10px", display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {[["yes", "Yes"], ["no", "No"], ["unsure", "Not sure"]].map(([v, label]) => (
+            <button key={v} onClick={() => answerFact(v)}
+              style={{ background: "none", border: "1px solid #3A3A3A", borderRadius: 20, padding: "7px 16px", color: C.white, fontSize: 13, cursor: "pointer" }}>
+              {label}
+            </button>
+          ))}
         </div>
       )}
 
@@ -1457,6 +1521,7 @@ This letter was prepared with assistance from Robin (robinhealth.com), an AI-ena
               stage === "ask_size" ? "Enter number of people in your household…" :
               stage === "ask_plan" ? "Tap a plan above, or type your choice…" :
               stage === "ask_name" ? "Type the patient's name…" :
+              stage === "ask_letter_facts" ? "Tap Yes, No, or Not sure…" :
               stage === "ask_insurer" ? "Enter your insurance company's name…" :
               stage === "ask_send" ? "Tap an option above…" :
               stage === "ask_send_contact" ? (pendingChannel === "letter_fax" ? "Enter the fax number…" : "Enter the billing email…") :

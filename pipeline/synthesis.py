@@ -90,6 +90,37 @@ class SynthesisResult:
     beta_caveat: str
 
 
+def synthesis_from_dict(d: dict) -> "SynthesisResult":
+    """
+    Rebuild a SynthesisResult from the JSON we persisted at intake (see
+    repository.persist_case_synthesis). Used to draft the letter from the
+    patient's *actual* analysis rather than a generic placeholder. Unknown
+    outcome_type values are skipped defensively. follow_up_questions aren't
+    needed for drafting, so they're dropped.
+    """
+    reasons: list[Reason] = []
+    for r in d.get("reasons") or []:
+        try:
+            outcome_type = OutcomeType(r.get("outcome_type"))
+        except ValueError:
+            continue
+        reasons.append(Reason(
+            outcome_type=outcome_type,
+            summary=r.get("summary", ""),
+            estimated_low=r.get("estimated_low"),
+            estimated_high=r.get("estimated_high"),
+            source_requirement_codes=r.get("source_requirement_codes") or [],
+        ))
+    return SynthesisResult(
+        headline_low=d.get("headline_low"),
+        headline_high=d.get("headline_high"),
+        headline_could_eliminate=bool(d.get("headline_could_eliminate")),
+        reasons=reasons,
+        follow_up_questions=[],
+        beta_caveat=d.get("beta_caveat", ""),
+    )
+
+
 DEFAULT_BETA_CAVEAT = (
     "This is our AI's best estimate based on the documents you've "
     "provided. RobinHealth is in beta -- actual results depend on your "

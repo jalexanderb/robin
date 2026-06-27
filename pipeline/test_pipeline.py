@@ -2337,6 +2337,58 @@ def test_compute_robinhealth_fee_zero_or_no_savings_is_free():
     assert compute_robinhealth_fee(None, "contingency") == 0.0
 
 
+# ============================================================
+# Legal leverage + synthesis rehydration (letter strengthening)
+# ============================================================
+
+def test_leverage_emergency_and_out_of_network_cite_no_surprises_act():
+    from legal_leverage import build_leverage_arguments
+    args = build_leverage_arguments(emergency=True, out_of_network=True, received_itemized=True)
+    bases = [a.basis.lower() for a in args]
+    assert any("emergency" in b for b in bases)
+    assert any("out-of-network" in b for b in bases)
+    assert any("149" in a.text for a in args)  # No Surprises Act = 45 C.F.R. Part 149
+
+
+def test_leverage_skips_unknown_facts_but_keeps_price_transparency():
+    from legal_leverage import build_leverage_arguments
+    args = build_leverage_arguments()  # everything unknown, hospital default
+    bases = [a.basis.lower() for a in args]
+    assert all("emergency" not in b for b in bases)
+    assert any("price transparency" in b for b in bases)
+
+
+def test_leverage_good_faith_estimate_only_for_self_pay():
+    from legal_leverage import build_leverage_arguments
+    assert not any("Good Faith Estimate" in a.basis
+                   for a in build_leverage_arguments(self_pay=False, good_faith_estimate=False))
+    assert any("Good Faith Estimate" in a.basis
+               for a in build_leverage_arguments(self_pay=True, good_faith_estimate=False))
+
+
+def test_leverage_requests_itemized_bill_when_not_received():
+    from legal_leverage import build_leverage_arguments
+    assert any("itemized" in a.basis.lower()
+               for a in build_leverage_arguments(received_itemized=False))
+
+
+def test_synthesis_from_dict_rebuilds_the_real_analysis():
+    import dataclasses
+    from synthesis import SynthesisResult, Reason, OutcomeType, synthesis_from_dict
+    original = SynthesisResult(
+        headline_low=1200.0, headline_high=4800.0, headline_could_eliminate=False,
+        reasons=[Reason(
+            outcome_type=OutcomeType.PARTIAL_REDUCTION, summary="Above typical rates.",
+            estimated_low=1200.0, estimated_high=4800.0, source_requirement_codes=[],
+        )],
+        follow_up_questions=[], beta_caveat="beta",
+    )
+    rebuilt = synthesis_from_dict(dataclasses.asdict(original))
+    assert rebuilt.headline_low == 1200.0
+    assert rebuilt.reasons[0].outcome_type == OutcomeType.PARTIAL_REDUCTION
+    assert rebuilt.reasons[0].summary == "Above typical rates."
+
+
 
 # ============================================================
 # Letter rendering and delivery tests (no LLM, no DB needed)
