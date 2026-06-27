@@ -23,6 +23,8 @@ EXPOSE 8001
 # Default: run the API server.
 # Override in docker-compose for the worker: command: python pipeline/worker.py
 WORKDIR /app/pipeline
-CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8001"]
+# Bind to $PORT when the host provides one (Railway/Render set it); default
+# to 8001 locally and in docker-compose.
+CMD ["sh", "-c", "uvicorn api:app --host 0.0.0.0 --port ${PORT:-8001}"]
 
 
