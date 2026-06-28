@@ -56,8 +56,10 @@ function Faq({ q, a }) {
   );
 }
 
-export default function Landing({ onStart }) {
-  const wrap = { maxWidth: 960, margin: "0 auto", padding: "0 20px" };
+export default function Landing({ chatSlot }) {
+  const wrap = { maxWidth: 1080, margin: "0 auto", padding: "0 20px" };
+  const scrollToChat = () =>
+    document.getElementById("robin-chat")?.scrollIntoView({ behavior: "smooth", block: "center" });
   return (
     <div style={{ background: L.bg, color: L.ink, fontFamily: "system-ui, -apple-system, sans-serif", minHeight: "100vh" }}>
       {/* Header */}
@@ -68,26 +70,34 @@ export default function Landing({ onStart }) {
           <nav style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 22 }}>
             <a href="#how" style={{ color: L.slate, textDecoration: "none", fontSize: 14 }}>How it works</a>
             <a href="#pricing" style={{ color: L.slate, textDecoration: "none", fontSize: 14 }}>Pricing</a>
-            <button onClick={onStart} style={{ background: L.red, color: "#fff", border: "none", borderRadius: 10, padding: "9px 16px", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Analyze my bill</button>
+            <button onClick={scrollToChat} style={{ background: L.red, color: "#fff", border: "none", borderRadius: 10, padding: "9px 16px", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Analyze my bill</button>
           </nav>
         </div>
       </header>
 
-      {/* Hero */}
-      <section style={{ ...wrap, padding: "64px 20px 56px", textAlign: "center" }}>
-        <p style={{ display: "inline-block", background: L.redSoft, color: L.red, fontSize: 13, fontWeight: 600, padding: "5px 12px", borderRadius: 999, margin: "0 0 20px" }}>AI patient advocate · Beta</p>
-        <h1 style={{ fontSize: "clamp(32px, 5.5vw, 46px)", lineHeight: 1.1, fontWeight: 800, color: L.ink, letterSpacing: "-0.5px", margin: "0 0 18px" }}>
-          Fight back against confusing medical bills.
-        </h1>
-        <p style={{ fontSize: 19, color: L.slate, lineHeight: 1.6, maxWidth: 640, margin: "0 auto 28px" }}>
-          Robin is your AI health advocate. Share a bill and Robin finds the errors, overcharges, and patient-protection laws on your side — then drafts the letters to lower what you owe.
-        </p>
-        <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
-          <Cta onStart={onStart}>Analyze my bill — free to start</Cta>
+      {/* Hero: copy on the left, the live chat embedded on the right */}
+      <section style={{ ...wrap, padding: "56px 20px 48px" }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 40, alignItems: "center", justifyContent: "center" }}>
+          <div style={{ flex: "1 1 360px", minWidth: 300, maxWidth: 520 }}>
+            <p style={{ display: "inline-block", background: L.redSoft, color: L.red, fontSize: 13, fontWeight: 600, padding: "5px 12px", borderRadius: 999, margin: "0 0 20px" }}>AI patient advocate · Beta</p>
+            <h1 style={{ fontSize: "clamp(32px, 5vw, 46px)", lineHeight: 1.1, fontWeight: 800, color: L.ink, letterSpacing: "-0.5px", margin: "0 0 18px" }}>
+              Fight back against confusing medical bills.
+            </h1>
+            <p style={{ fontSize: 19, color: L.slate, lineHeight: 1.6, margin: "0 0 28px" }}>
+              Robin is your AI health advocate. Share a bill and Robin finds the errors, overcharges, and patient-protection laws on your side — then drafts the letters to lower what you owe.
+            </p>
+            <Cta onStart={scrollToChat}>Analyze my bill — free to start</Cta>
+            <p style={{ fontSize: 14, color: L.muted, margin: "16px 0 0" }}>
+              You'll never pay more than <strong>$50/month</strong> or <strong>20% of what we save you</strong> — whichever you choose.
+            </p>
+          </div>
+          <div
+            id="robin-chat"
+            style={{ flex: "0 0 auto", width: 420, maxWidth: "100%", height: 620, maxHeight: "80vh", borderRadius: 18, overflow: "hidden", border: `1px solid ${L.line}`, boxShadow: "0 24px 60px rgba(0,0,0,0.18)" }}
+          >
+            {chatSlot}
+          </div>
         </div>
-        <p style={{ fontSize: 14, color: L.muted, margin: "16px 0 0" }}>
-          You'll never pay more than <strong>$50/month</strong> or <strong>20% of what we save you</strong> — whichever you choose.
-        </p>
       </section>
 
       {/* Trust bar */}
@@ -113,7 +123,7 @@ export default function Landing({ onStart }) {
           <Step n="3" title="Robin takes action" body="Robin drafts and sends the right letters — to your provider or your insurer — and tracks the response, telling you exactly what to do next." />
         </div>
         <div style={{ textAlign: "center", marginTop: 40 }}>
-          <Cta onStart={onStart}>Start with your bill</Cta>
+          <Cta onStart={scrollToChat}>Start with your bill</Cta>
         </div>
       </section>
 
@@ -165,7 +175,7 @@ export default function Landing({ onStart }) {
           </div>
         </div>
         <div style={{ textAlign: "center", marginTop: 36 }}>
-          <Cta onStart={onStart}>Get my free analysis</Cta>
+          <Cta onStart={scrollToChat}>Get my free analysis</Cta>
         </div>
       </section>
 
@@ -185,7 +195,7 @@ export default function Landing({ onStart }) {
       <section style={{ ...wrap, padding: "72px 20px", textAlign: "center" }}>
         <h2 style={{ fontSize: 32, fontWeight: 800, color: L.ink, margin: "0 0 14px" }}>Let's lower that bill.</h2>
         <p style={{ fontSize: 17, color: L.slate, margin: "0 0 28px" }}>It's free to find out what you could save.</p>
-        <Cta onStart={onStart}>Analyze my bill</Cta>
+        <Cta onStart={scrollToChat}>Analyze my bill</Cta>
       </section>
 
       {/* Footer */}

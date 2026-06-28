@@ -314,7 +314,7 @@ const saveResume = (r) => {
 };
 const clearResume = () => { try { localStorage.removeItem(RESUME_KEY); } catch { /* storage unavailable */ } };
 
-function Chat({ onHome }) {
+function Chat({ embedded, onHome }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [typing, setTyping] = useState(false);
@@ -348,6 +348,7 @@ function Chat({ onHome }) {
 
   const bottomRef = useRef(null);
   const inputRef = useRef(null);
+  const listRef = useRef(null);
 
   useSessionTimeout(sessionActive, () => {
     setTimedOut(true);
@@ -355,8 +356,11 @@ function Chat({ onHome }) {
   });
 
   useEffect(() => {
+    // Scroll the message list itself (not the page) so an embedded chat never
+    // yanks the whole landing page around when a new message arrives.
     const reduce = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    bottomRef.current?.scrollIntoView({ behavior: reduce ? "auto" : "smooth" });
+    const el = listRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: reduce ? "auto" : "smooth" });
   }, [messages, typing]);
 
   // Persist the opaque case pointer as it changes (never for the demo case).
@@ -1329,7 +1333,7 @@ This letter was prepared with assistance from Robin (robinhealth.com), an AI-ena
 
   // ── Main chat UI ─────────────────────────────────────────────────────────
   return (
-    <div style={{ minHeight: "100vh", background: C.dark, display: "flex", flexDirection: "column", fontFamily: "system-ui, -apple-system, sans-serif" }}>
+    <div style={{ ...(embedded ? { height: "100%" } : { minHeight: "100vh" }), background: C.dark, display: "flex", flexDirection: "column", fontFamily: "system-ui, -apple-system, sans-serif" }}>
       <style>{`
         @keyframes bounce { 0%, 60%, 100% { transform: translateY(0); } 30% { transform: translateY(-5px); } }
         * { box-sizing: border-box; }
@@ -1351,7 +1355,7 @@ This letter was prepared with assistance from Robin (robinhealth.com), an AI-ena
       </div>
 
       {/* Messages */}
-      <div role="log" aria-live="polite" aria-label="Conversation with Robin"
+      <div ref={listRef} role="log" aria-live="polite" aria-label="Conversation with Robin"
         style={{ flex: 1, overflowY: "auto", padding: "20px 16px" }}>
         {messages.map(m => <Bubble key={m.id} msg={m} />)}
         {typing && <TypingIndicator />}
@@ -1549,10 +1553,9 @@ This letter was prepared with assistance from Robin (robinhealth.com), an AI-ena
   );
 }
 
-// ─── Top-level: marketing site wraps the chat; chat stays the main interface ─
+// ─── Top-level: the marketing site with the live chat embedded in its hero ──
+// The chat is passed in as a slot so Landing doesn't import Chat (no circular
+// import), and it's a single instance — the CTAs just scroll to it.
 export default function App() {
-  const [view, setView] = useState("home");
-  return view === "chat"
-    ? <Chat onHome={() => setView("home")} />
-    : <Landing onStart={() => setView("chat")} />;
+  return <Landing chatSlot={<Chat embedded />} />;
 }
