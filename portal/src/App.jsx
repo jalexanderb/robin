@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import Landing from "./Landing.jsx";
 
 // ─── HIPAA / Privacy notes ────────────────────────────────────────────────
 // No PHI stored in localStorage — all state is in React memory only.
@@ -313,7 +314,7 @@ const saveResume = (r) => {
 };
 const clearResume = () => { try { localStorage.removeItem(RESUME_KEY); } catch { /* storage unavailable */ } };
 
-export default function App() {
+function Chat({ onHome }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [typing, setTyping] = useState(false);
@@ -1341,8 +1342,11 @@ This letter was prepared with assistance from Robin (robinhealth.com), an AI-ena
 
       {/* Header */}
       <div style={{ padding: "12px 18px", borderBottom: "1px solid #2A2A2A", display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
-        <div aria-hidden="true" style={{ width: 32, height: 32, borderRadius: "50%", background: C.red, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 14, color: C.white, flexShrink: 0 }}>R</div>
-        <span style={{ color: C.white, fontWeight: 700, fontSize: 15 }}>Robin</span>
+        <button onClick={onHome} aria-label="Back to Robin Health home"
+          style={{ display: "flex", alignItems: "center", gap: 12, background: "none", border: "none", padding: 0, cursor: onHome ? "pointer" : "default" }}>
+          <div aria-hidden="true" style={{ width: 32, height: 32, borderRadius: "50%", background: C.red, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 14, color: C.white, flexShrink: 0 }}>R</div>
+          <span style={{ color: C.white, fontWeight: 700, fontSize: 15 }}>Robin</span>
+        </button>
         <span style={{ color: "#A8A6A2", fontSize: 12, marginLeft: "auto" }}>Beta · Session expires after 15 min inactivity</span>
       </div>
 
@@ -1543,4 +1547,12 @@ This letter was prepared with assistance from Robin (robinhealth.com), an AI-ena
       </div>
     </div>
   );
+}
+
+// ─── Top-level: marketing site wraps the chat; chat stays the main interface ─
+export default function App() {
+  const [view, setView] = useState("home");
+  return view === "chat"
+    ? <Chat onHome={() => setView("home")} />
+    : <Landing onStart={() => setView("chat")} />;
 }
