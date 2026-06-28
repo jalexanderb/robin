@@ -76,7 +76,7 @@ export default function Landing({ onStart }) {
       {/* Hero */}
       <section style={{ ...wrap, padding: "64px 20px 56px", textAlign: "center" }}>
         <p style={{ display: "inline-block", background: L.redSoft, color: L.red, fontSize: 13, fontWeight: 600, padding: "5px 12px", borderRadius: 999, margin: "0 0 20px" }}>AI patient advocate · Beta</p>
-        <h1 style={{ fontSize: 44, lineHeight: 1.1, fontWeight: 800, letterSpacing: "-0.5px", margin: "0 0 18px" }}>
+        <h1 style={{ fontSize: "clamp(32px, 5.5vw, 46px)", lineHeight: 1.1, fontWeight: 800, color: L.ink, letterSpacing: "-0.5px", margin: "0 0 18px" }}>
           Fight back against confusing medical bills.
         </h1>
         <p style={{ fontSize: 19, color: L.slate, lineHeight: 1.6, maxWidth: 640, margin: "0 auto 28px" }}>
@@ -106,7 +106,7 @@ export default function Landing({ onStart }) {
 
       {/* How it works */}
       <section id="how" aria-labelledby="how-h" style={{ ...wrap, padding: "64px 20px" }}>
-        <h2 id="how-h" style={{ fontSize: 30, fontWeight: 800, textAlign: "center", margin: "0 0 40px" }}>How Robin works</h2>
+        <h2 id="how-h" style={{ fontSize: 30, fontWeight: 800, color: L.ink, textAlign: "center", margin: "0 0 40px" }}>How Robin works</h2>
         <div style={{ display: "flex", gap: 28, flexWrap: "wrap" }}>
           <Step n="1" title="Share your bill" body="Snap a photo or upload your bill (and your insurer's EOB, if you have one). It takes a couple of minutes in a simple chat." />
           <Step n="2" title="Robin investigates" body="Robin checks your charity-care eligibility, hunts for overcharges and coding errors, compares prices to fair benchmarks, and checks whether the provider followed laws like the No Surprises Act." />
@@ -120,7 +120,7 @@ export default function Landing({ onStart }) {
       {/* What Robin can do */}
       <section style={{ background: L.surface, borderTop: `1px solid ${L.line}`, borderBottom: `1px solid ${L.line}` }}>
         <div style={{ ...wrap, padding: "64px 20px" }}>
-          <h2 style={{ fontSize: 30, fontWeight: 800, textAlign: "center", margin: "0 0 12px" }}>What Robin looks for</h2>
+          <h2 style={{ fontSize: 30, fontWeight: 800, color: L.ink, textAlign: "center", margin: "0 0 12px" }}>What Robin looks for</h2>
           <p style={{ fontSize: 16, color: L.slate, textAlign: "center", maxWidth: 620, margin: "0 auto 36px", lineHeight: 1.6 }}>
             Most bills have more than one angle worth fighting. Robin works every one that applies to you.
           </p>
@@ -137,14 +137,14 @@ export default function Landing({ onStart }) {
 
       {/* Pricing */}
       <section id="pricing" aria-labelledby="pricing-h" style={{ ...wrap, padding: "64px 20px" }}>
-        <h2 id="pricing-h" style={{ fontSize: 30, fontWeight: 800, textAlign: "center", margin: "0 0 12px" }}>Simple, fair pricing</h2>
+        <h2 id="pricing-h" style={{ fontSize: 30, fontWeight: 800, color: L.ink, textAlign: "center", margin: "0 0 12px" }}>Simple, fair pricing</h2>
         <p style={{ fontSize: 16, color: L.slate, textAlign: "center", maxWidth: 620, margin: "0 auto 36px", lineHeight: 1.6 }}>
           You choose — and you'll never pay more than whichever is lower for you. Analyzing your bill is always free.
         </p>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
           <div style={{ background: L.surface, border: `1px solid ${L.line}`, borderRadius: 16, padding: "24px" }}>
             <h3 style={{ fontSize: 18, fontWeight: 700, margin: "0 0 6px" }}>Pay-per-win</h3>
-            <p style={{ fontSize: 32, fontWeight: 800, margin: "0 0 4px" }}>20%<span style={{ fontSize: 16, fontWeight: 500, color: L.muted }}> of what we save you</span></p>
+            <p style={{ fontSize: 32, fontWeight: 800, color: L.ink, margin: "0 0 4px" }}>20%<span style={{ fontSize: 16, fontWeight: 500, color: L.muted }}> of what we save you</span></p>
             <p style={{ fontSize: 14, color: L.muted, margin: "0 0 16px" }}>Capped at $1,000 per bill</p>
             <ul style={{ margin: 0, padding: 0, listStyle: "none", fontSize: 15, color: L.slate, lineHeight: 1.9 }}>
               <li>✓ $0 upfront</li>
@@ -155,7 +155,7 @@ export default function Landing({ onStart }) {
           <div style={{ background: L.surface, border: `2px solid ${L.red}`, borderRadius: 16, padding: "24px", position: "relative" }}>
             <span style={{ position: "absolute", top: -12, left: 24, background: L.red, color: "#fff", fontSize: 12, fontWeight: 600, padding: "4px 12px", borderRadius: 999 }}>Best for ongoing or large bills</span>
             <h3 style={{ fontSize: 18, fontWeight: 700, margin: "0 0 6px" }}>Membership</h3>
-            <p style={{ fontSize: 32, fontWeight: 800, margin: "0 0 4px" }}>$50<span style={{ fontSize: 16, fontWeight: 500, color: L.muted }}>/month</span></p>
+            <p style={{ fontSize: 32, fontWeight: 800, color: L.ink, margin: "0 0 4px" }}>$50<span style={{ fontSize: 16, fontWeight: 500, color: L.muted }}>/month</span></p>
             <p style={{ fontSize: 14, color: L.muted, margin: "0 0 16px" }}>We take 0% of your savings</p>
             <ul style={{ margin: 0, padding: 0, listStyle: "none", fontSize: 15, color: L.slate, lineHeight: 1.9 }}>
               <li>✓ Free until your first win</li>
@@ -172,7 +172,7 @@ export default function Landing({ onStart }) {
       {/* FAQ */}
       <section style={{ background: L.surface, borderTop: `1px solid ${L.line}` }}>
         <div style={{ maxWidth: 720, margin: "0 auto", padding: "64px 20px" }}>
-          <h2 style={{ fontSize: 30, fontWeight: 800, textAlign: "center", margin: "0 0 28px" }}>Questions, answered</h2>
+          <h2 style={{ fontSize: 30, fontWeight: 800, color: L.ink, textAlign: "center", margin: "0 0 28px" }}>Questions, answered</h2>
           <Faq q="Do I need to have insurance?" a="No. Robin helps whether you're insured or paying out of pocket. If you have insurance, sharing your Explanation of Benefits lets Robin also check the claim was handled correctly." />
           <Faq q="Is my information private?" a="Your information is used only to analyze and advocate for your bill — nothing else — and you can ask us to delete it at any time. Nothing sensitive is stored in your browser; it clears when you close the tab." />
           <Faq q="Are you lawyers? Is this legal advice?" a="No. Robin is an AI-powered advocacy service, not a law firm, and nothing it produces is legal advice. Robin acts as your authorized representative, and you review and approve everything before it's sent." />
@@ -183,7 +183,7 @@ export default function Landing({ onStart }) {
 
       {/* Final CTA */}
       <section style={{ ...wrap, padding: "72px 20px", textAlign: "center" }}>
-        <h2 style={{ fontSize: 32, fontWeight: 800, margin: "0 0 14px" }}>Let's lower that bill.</h2>
+        <h2 style={{ fontSize: 32, fontWeight: 800, color: L.ink, margin: "0 0 14px" }}>Let's lower that bill.</h2>
         <p style={{ fontSize: 17, color: L.slate, margin: "0 0 28px" }}>It's free to find out what you could save.</p>
         <Cta onStart={onStart}>Analyze my bill</Cta>
       </section>
