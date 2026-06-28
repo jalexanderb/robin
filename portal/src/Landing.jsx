@@ -5,8 +5,8 @@
 // calls onStart() to open it.
 
 const L = {
-  bg: "#FBF9F6", surface: "#FFFFFF", ink: "#1A1A1A", slate: "#43403B",
-  muted: "#6B6760", line: "#E7E2DB", red: "#E03E27", redSoft: "#FDECEA",
+  bg: "#FBF9F6", surface: "#FFFFFF", ink: "#1A1A1A", slate: "#1A1A1A",
+  muted: "#3A3733", line: "#E7E2DB", red: "#E03E27", redSoft: "#FDECEA",
   green: "#1A7F4E", greenSoft: "#EBF7F1",
 };
 
@@ -80,13 +80,13 @@ export default function Landing({ onStart }) {
           Fight back against confusing medical bills.
         </h1>
         <p style={{ fontSize: 19, color: L.slate, lineHeight: 1.6, maxWidth: 640, margin: "0 auto 28px" }}>
-          Robin is your AI health advocate. Share a bill and Robin finds the errors, overcharges, and patient-protection laws on your side — then drafts the letters to lower what you owe. No upfront cost.
+          Robin is your AI health advocate. Share a bill and Robin finds the errors, overcharges, and patient-protection laws on your side — then drafts the letters to lower what you owe.
         </p>
         <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
           <Cta onStart={onStart}>Analyze my bill — free to start</Cta>
         </div>
         <p style={{ fontSize: 14, color: L.muted, margin: "16px 0 0" }}>
-          You'll never pay more than <strong>$50/month</strong> or <strong>20% of what we save you</strong> — and nothing if we don't save you anything.
+          You'll never pay more than <strong>$50/month</strong> or <strong>20% of what we save you</strong> — whichever you choose.
         </p>
       </section>
 
@@ -94,9 +94,9 @@ export default function Landing({ onStart }) {
       <section style={{ background: L.surface, borderTop: `1px solid ${L.line}`, borderBottom: `1px solid ${L.line}` }}>
         <div style={{ ...wrap, display: "flex", flexWrap: "wrap", gap: 16, justifyContent: "space-between", padding: "18px 20px" }}>
           {[
-            "HIPAA-secure & never sold",
-            "No upfront cost",
-            "We only get paid when you save",
+            "You approve everything before it's sent",
+            "Built on Medicare & hospital price data",
+            "Cites real patient-protection laws",
             "Beta — you review everything",
           ].map(t => (
             <span key={t} style={{ fontSize: 14, color: L.slate, fontWeight: 500 }}>✓ {t}</span>
@@ -174,7 +174,7 @@ export default function Landing({ onStart }) {
         <div style={{ maxWidth: 720, margin: "0 auto", padding: "64px 20px" }}>
           <h2 style={{ fontSize: 30, fontWeight: 800, textAlign: "center", margin: "0 0 28px" }}>Questions, answered</h2>
           <Faq q="Do I need to have insurance?" a="No. Robin helps whether you're insured or paying out of pocket. If you have insurance, sharing your Explanation of Benefits lets Robin also check the claim was handled correctly." />
-          <Faq q="Is my information private?" a="Yes. Your information is handled under HIPAA, encrypted, and never sold. Nothing sensitive is stored in your browser, and you can ask us to delete your data at any time." />
+          <Faq q="Is my information private?" a="Your information is used only to analyze and advocate for your bill — nothing else — and you can ask us to delete it at any time. Nothing sensitive is stored in your browser; it clears when you close the tab." />
           <Faq q="Are you lawyers? Is this legal advice?" a="No. Robin is an AI-powered advocacy service, not a law firm, and nothing it produces is legal advice. Robin acts as your authorized representative, and you review and approve everything before it's sent." />
           <Faq q="What does it actually cost?" a="Analyzing your bill is free. After that you choose: pay-per-win (20% of savings, capped at $1,000, and nothing if we save you nothing) or a $50/month membership where we take 0% of your savings. You'll never pay more than whichever is lower for you." />
           <Faq q="It says Beta — what does that mean?" a="Robin is new and improving. Its estimates and drafted letters are a strong starting point, but you should review everything carefully before acting — and Robin will always remind you to." />
@@ -193,7 +193,7 @@ export default function Landing({ onStart }) {
         <div style={{ ...wrap, padding: "28px 20px", fontSize: 13, color: L.muted, lineHeight: 1.7 }}>
           <p style={{ margin: "0 0 8px", fontWeight: 600, color: L.slate }}>Robin Health</p>
           <p style={{ margin: 0 }}>
-            Robin Health is an AI-enabled patient advocacy service and is in beta. It is not a law firm, and nothing here is legal, medical, or tax advice. Estimates are not guarantees — please review everything carefully before acting. Information is handled under HIPAA and never sold.
+            Robin Health is an AI-enabled patient advocacy service and is in beta. It is not a law firm, and nothing here is legal, medical, or tax advice. Estimates are not guarantees — please review everything carefully before acting. Your information is used only to work on your bill.
           </p>
         </div>
       </footer>

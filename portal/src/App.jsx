@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import Landing from "./Landing.jsx";
 
-// ─── HIPAA / Privacy notes ────────────────────────────────────────────────
+// ─── Privacy notes ────────────────────────────────────────────────────────
 // No PHI stored in localStorage — all state is in React memory only.
 // Session clears on page refresh. Patient ID held in state, never in URL.
 // ─────────────────────────────────────────────────────────────────────────
@@ -891,7 +891,7 @@ function Chat({ onHome }) {
         from: "robin",
         text: resume
           ? "Welcome back — I kept a private reference to your case on this device (no personal details are stored here). Want to pick up where you left off, or start fresh?"
-          : "Drop a bill here and I'll analyze it — no commitment, no upfront cost.",
+          : "Drop a bill here and I'll analyze it — no commitment.",
       });
     };
     boot();
