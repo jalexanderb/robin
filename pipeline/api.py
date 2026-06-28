@@ -166,7 +166,7 @@ ROBIN_CHAT_SYSTEM = (
     "- Pricing: the user never pays more than $50/month, or 20% of what "
     "RobinHealth saves them (capped at $1,000) -- whichever they prefer. "
     "Pay-per-win charges nothing if nothing is saved; the $50/month membership "
-    "takes 0% of savings and is free until the first win.\n"
+    "takes 0% of savings.\n"
     "- If a question is clearly unrelated to medical bills, healthcare costs, "
     "or insurance, gently steer back to what you can help with."
 )
@@ -619,7 +619,7 @@ async def set_plan(
     """
     Choose the billing plan: 'contingency' (20% of savings, capped at $1,000,
     nothing if we save nothing) or 'membership' ($50/month flat, 0% of
-    savings, free until the first win). The patient picks whichever costs less.
+    savings). The patient picks whichever costs less.
     """
     _check_auth(request)
     request_id = getattr(request.state, "request_id", "-")

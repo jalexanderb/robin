@@ -80,6 +80,7 @@ export default function Landing({ chatSlot }) {
   const wrap = { maxWidth: 1080, margin: "0 auto", padding: "0 20px" };
   const scrollToChat = () =>
     document.getElementById("robin-chat")?.scrollIntoView({ behavior: "smooth", block: "center" });
+  const goHome = () => window.scrollTo({ top: 0, behavior: "smooth" });
 
   // Reveal-on-scroll (respects reduced-motion / no IntersectionObserver).
   useEffect(() => {
@@ -120,8 +121,10 @@ export default function Landing({ chatSlot }) {
       {/* Header */}
       <header style={{ borderBottom: `1px solid ${L.line}`, background: L.bg, position: "sticky", top: 0, zIndex: 10 }}>
         <div style={{ ...wrap, display: "flex", alignItems: "center", gap: 12, height: 64 }}>
-          <div aria-hidden="true" style={{ width: 30, height: 30, borderRadius: "50%", background: L.red, color: "#fff", fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>R</div>
-          <span style={{ fontWeight: 700, fontSize: 17 }}>Robin Health</span>
+          <button onClick={goHome} aria-label="Robin Health — home" style={{ display: "flex", alignItems: "center", gap: 12, background: "none", border: "none", padding: 0, cursor: "pointer" }}>
+            <div aria-hidden="true" style={{ width: 30, height: 30, borderRadius: "50%", background: L.red, color: "#fff", fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>R</div>
+            <span style={{ fontWeight: 700, fontSize: 17, color: L.ink }}>Robin Health</span>
+          </button>
           <nav style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 22 }}>
             <span className="nav-links" style={{ display: "flex", gap: 22 }}>
               <a href="#how" style={{ color: L.slate, textDecoration: "none", fontSize: 14 }}>How it works</a>
@@ -141,11 +144,11 @@ export default function Landing({ chatSlot }) {
               Fight back against confusing medical bills.
             </h1>
             <p style={{ fontSize: 19, color: L.slate, lineHeight: 1.6, margin: "0 0 28px" }}>
-              Robin is your AI health advocate. Share a bill and Robin finds the errors, overcharges, and patient-protection laws on your side — then drafts the letters to lower what you owe.
+              Robin is your AI powered healthcare advocate. Share a bill and Robin finds the errors, overcharges, and patient-protection laws on your side — then drafts the letters to lower what you owe.
             </p>
             <Cta onStart={scrollToChat}>Analyze my bill — free to start</Cta>
             <p style={{ fontSize: 14, color: L.muted, margin: "16px 0 0" }}>
-              You'll never pay more than <strong>$50/month</strong> or <strong>20% of what we save you</strong> — whichever you choose.
+              Pricing: <strong>$50/month</strong> or <strong>20%</strong> of what we save.
             </p>
           </div>
           <div
@@ -154,20 +157,6 @@ export default function Landing({ chatSlot }) {
           >
             {chatSlot}
           </div>
-        </div>
-      </section>
-
-      {/* Trust bar */}
-      <section style={{ background: L.surface, borderTop: `1px solid ${L.line}`, borderBottom: `1px solid ${L.line}` }}>
-        <div style={{ ...wrap, display: "flex", flexWrap: "wrap", gap: 16, justifyContent: "space-between", padding: "18px 20px" }}>
-          {[
-            "You approve everything before it's sent",
-            "Built on Medicare & hospital price data",
-            "Cites real patient-protection laws",
-            "Beta — you review everything",
-          ].map((t) => (
-            <span key={t} style={{ fontSize: 14, color: L.slate, fontWeight: 500 }}>✓ {t}</span>
-          ))}
         </div>
       </section>
 
@@ -188,7 +177,7 @@ export default function Landing({ chatSlot }) {
       {/* How it works */}
       <section id="how" aria-labelledby="how-h" className="reveal" style={{ ...wrap, padding: "64px 20px" }}>
         <Eyebrow>How it works</Eyebrow>
-        <h2 id="how-h" style={{ fontSize: 30, fontWeight: 800, color: L.ink, textAlign: "center", margin: "0 0 40px" }}>Three steps, mostly done for you</h2>
+        <h2 id="how-h" style={{ fontSize: 30, fontWeight: 800, color: L.ink, textAlign: "center", margin: "0 0 40px" }}>Three simple steps to save you money</h2>
         <div style={{ display: "flex", gap: 28, flexWrap: "wrap" }}>
           <Step n="1" title="Share your bill" body="Snap a photo or upload your bill (and your insurer's EOB, if you have one). It takes a couple of minutes in a simple chat." />
           <Step n="2" title="Robin investigates" body="Robin checks your charity-care eligibility, hunts for overcharges and coding errors, compares prices to fair benchmarks, and checks whether the provider followed laws like the No Surprises Act." />
@@ -203,15 +192,12 @@ export default function Landing({ chatSlot }) {
       <section className="reveal" style={{ background: L.surface, borderTop: `1px solid ${L.line}`, borderBottom: `1px solid ${L.line}` }}>
         <div style={{ ...wrap, padding: "64px 20px" }}>
           <Eyebrow>What Robin looks for</Eyebrow>
-          <h2 style={{ fontSize: 30, fontWeight: 800, color: L.ink, textAlign: "center", margin: "0 0 12px" }}>Every angle worth fighting</h2>
-          <p style={{ fontSize: 16, color: L.slate, textAlign: "center", maxWidth: 620, margin: "0 auto 36px", lineHeight: 1.6 }}>
-            Most bills have more than one thing wrong. Robin works every one that applies to you.
-          </p>
+          <h2 style={{ fontSize: 30, fontWeight: 800, color: L.ink, textAlign: "center", margin: "0 0 36px" }}>Fighting back against an unfair system</h2>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 14 }}>
-            <Capability icon="🤝" title="Charity care & financial assistance" body="Nonprofit hospitals must discount or forgive bills for patients who qualify. Robin checks if you're eligible and applies for you." />
+            <Capability icon="🤝" title="Charity care & financial assistance" body="Nonprofit hospitals must discount or forgive bills for patients who qualify. Robin checks if you're eligible and helps you apply." />
             <Capability icon="🔍" title="Billing errors & overcharges" body="Itemized bills routinely hide duplicate charges, services you never got, and coding mistakes. Robin flags them." />
             <Capability icon="📊" title="Fair-price benchmarking" body="Robin compares your charges to Medicare rates and the hospital's own published prices to show what's reasonable." />
-            <Capability icon="🛡️" title="No Surprises Act protections" body="For emergencies and surprise out-of-network bills, federal law limits what you owe. Robin holds providers to it." />
+            <Capability icon="🛡️" title="No Surprises Act protections" body="For emergencies and surprise out-of-network bills, federal law limits what you owe. Robin helps hold providers to it." />
             <Capability icon="📨" title="Insurance claim appeals" body="If your insurer denied or mishandled a claim, Robin drafts a formal appeal asserting your rights." />
             <Capability icon="🔁" title="Negotiation & follow-up" body="Robin keeps going — drafting follow-up letters and tracking your case until it's resolved." />
           </div>
@@ -242,7 +228,6 @@ export default function Landing({ chatSlot }) {
             <p style={{ fontSize: 32, fontWeight: 800, color: L.ink, margin: "0 0 4px" }}>$50<span style={{ fontSize: 16, fontWeight: 500, color: L.muted }}>/month</span></p>
             <p style={{ fontSize: 14, color: L.muted, margin: "0 0 16px" }}>We take 0% of your savings</p>
             <ul style={{ margin: 0, padding: 0, listStyle: "none", fontSize: 15, color: L.slate, lineHeight: 1.9 }}>
-              <li>✓ Free until your first win</li>
               <li>✓ Unlimited bills</li>
               <li>✓ Cancel anytime</li>
             </ul>
@@ -263,9 +248,9 @@ export default function Landing({ chatSlot }) {
           <h2 style={{ fontSize: 30, fontWeight: 800, color: L.ink, textAlign: "center", margin: "0 0 28px" }}>Questions, answered</h2>
           <Faq q="Do I need to have insurance?" a="No. Robin helps whether you're insured or paying out of pocket. If you have insurance, sharing your Explanation of Benefits lets Robin also check the claim was handled correctly." />
           <Faq q="Is my information private?" a="Your information is used only to analyze and advocate for your bill — nothing else — and you can ask us to delete it at any time. Nothing sensitive is stored in your browser; it clears when you close the tab." />
-          <Faq q="Are you lawyers? Is this legal advice?" a="No. Robin is an AI-powered advocacy service, not a law firm, and nothing it produces is legal advice. Robin acts as your authorized representative, and you review and approve everything before it's sent." />
+          <Faq q="Are you lawyers? Is this legal advice?" a="No. Robin is an AI-powered advocacy service, not a law firm, and nothing it produces is legal advice. Robin can help you with negotiating with vendors, and you review and approve everything before it's sent." />
           <Faq q="What does it actually cost?" a="Analyzing your bill is free. After that you choose: pay-per-win (20% of savings, capped at $1,000, and nothing if we save you nothing) or a $50/month membership where we take 0% of your savings. You'll never pay more than whichever is lower for you." />
-          <Faq q="It says Beta — what does that mean?" a="Robin is new and improving. Its estimates and drafted letters are a strong starting point, but you should review everything carefully before acting — and Robin will always remind you to." />
+          <Faq q="It says Beta — what does that mean?" a="Robin is new and improving. Our service is starting with estimates and drafting letters, but we are still in active testing and everything should be reviewed carefully before you decide to act. Our vision is to build a comprehensive suite of services to help the American people get the most from a broken health system while paying the least." />
         </div>
       </section>
 

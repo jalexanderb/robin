@@ -242,8 +242,8 @@ const PLAN_OPTIONS = [
   {
     id: "membership",
     title: "Membership — $50/month",
-    sub: "We keep 0% of your savings. Free until your first win, cancel anytime. Best if your bill is large or you have more than one.",
-    confirm: "Great — you're on Membership: a flat $50/month and we keep 0% of whatever we save you. You won't be charged until we get your first win, and you can cancel anytime.",
+    sub: "We keep 0% of your savings. Cancel anytime. Best if your bill is large or you have more than one.",
+    confirm: "Great — you're on Membership: a flat $50/month and we keep 0% of whatever we save you. You can cancel anytime.",
   },
   {
     id: "contingency",
@@ -259,7 +259,7 @@ const FEE_TERMS_SUMMARY = `RobinHealth Fee Agreement (summary)
 You'll never pay more than $50/month, or 20% of what we save you. Choose either:
 
 • Pay-per-win — 20% of the amount we save you, capped at $1,000 per bill. Nothing if we don't save you anything.
-• Membership — a flat $50/month, and we take 0% of your savings. Free until your first win, cancel anytime.
+• Membership — a flat $50/month, and we take 0% of your savings. Cancel anytime.
 
 By choosing a plan you authorize RobinHealth to contact your provider (and, where relevant, your insurer) on your behalf about this bill. You can withdraw any time before an agreement is reached, with no fee owed. RobinHealth is in beta — please review everything carefully.`;
 
@@ -1557,5 +1557,5 @@ This letter was prepared with assistance from Robin (robinhealth.com), an AI-ena
 // The chat is passed in as a slot so Landing doesn't import Chat (no circular
 // import), and it's a single instance — the CTAs just scroll to it.
 export default function App() {
-  return <Landing chatSlot={<Chat embedded />} />;
+  return <Landing chatSlot={<Chat embedded onHome={() => window.scrollTo({ top: 0, behavior: "smooth" })} />} />;
 }

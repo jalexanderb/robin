@@ -69,15 +69,15 @@ class FeeAgreementRequired(Exception):
 #
 #   contingency (default): 20% of savings, CAPPED at $1,000, nothing if we
 #       save nothing. No commitment -- right for a one-off, single bill.
-#   membership: a flat $50/month and we take 0% of your savings. Free until
-#       your first win, cancel anytime -- right for ongoing / multiple bills.
+#   membership: a flat $50/month and we take 0% of your savings, cancel
+#       anytime -- right for ongoing / multiple bills.
 #
 # The cap matches the market (Goodbill, CareRoute both cap at $1,000) and the
 # membership undercuts it for any sizable win. This intentionally trades
 # per-win upside for trust, volume, and recurring revenue.
 #
-# NOTE: actually charging the $50/month (and the "free until first win" /
-# "pause when no active cases" mechanics) belongs to a billing integration
+# NOTE: actually charging the $50/month (and any "pause when no active cases"
+# mechanic) belongs to a billing integration
 # (e.g. Stripe) that isn't wired here. This module owns only what RobinHealth
 # takes out of a patient's *savings*, which membership sets to zero.
 
@@ -1432,8 +1432,7 @@ Pick whichever is cheaper for you:
      nothing.
 
   2) Membership — a flat $50 per month, and we take 0% of your savings,
-     no matter how large. It's free until we get your first win, and you
-     can cancel any time.
+     no matter how large. You can cancel any time.
 
 Example (pay-per-win): If your bill is $5,000 and we get it reduced to
 $2,000, you save $3,000. Our fee is 20% of $3,000 = $600. On a much
@@ -1442,8 +1441,8 @@ savings fee on that same bill is $0 — you'd just pay your $50/month.
 
 IF WE DON'T SAVE YOU ANYTHING
 On pay-per-win you owe us nothing — our fee only applies when we achieve
-a real, documented reduction. On Membership you aren't charged until
-your first win.
+a real, documented reduction. On Membership, the flat $50/month applies
+whether or not we save you money.
 
 YOUR AUTHORIZATION
 By accepting these terms, you authorize RobinHealth to communicate with
@@ -1482,7 +1481,7 @@ def get_fee_terms() -> dict:
             {
                 "id": PLAN_MEMBERSHIP,
                 "label": "Membership",
-                "summary": f"${int(MEMBERSHIP_MONTHLY_PRICE_USD)}/month flat, 0% of your savings. Free until your first win, cancel anytime.",
+                "summary": f"${int(MEMBERSHIP_MONTHLY_PRICE_USD)}/month flat, 0% of your savings. Cancel anytime.",
                 "fee_percentage": 0,
                 "fee_cap_usd": None,
                 "monthly_usd": MEMBERSHIP_MONTHLY_PRICE_USD,
