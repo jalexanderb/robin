@@ -75,3 +75,19 @@ def load(storage_key: str) -> bytes:
 def exists(storage_key: str) -> bool:
     path = os.path.join(_storage_dir(), os.path.basename(storage_key))
     return os.path.isfile(path)
+
+
+def delete(storage_key: str) -> bool:
+    """
+    Delete the blob for a storage_key (used by data-deletion / retention).
+    Returns True if a file was removed, False if it didn't exist. os.path.basename
+    guards against path traversal, exactly like load()/exists().
+    """
+    if not storage_key:
+        return False
+    path = os.path.join(_storage_dir(), os.path.basename(storage_key))
+    try:
+        os.remove(path)
+        return True
+    except FileNotFoundError:
+        return False

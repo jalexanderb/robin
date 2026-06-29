@@ -272,8 +272,8 @@ export default function Landing({ chatSlot }) {
             <nav style={{ display: "flex", flexWrap: "wrap", gap: 20, fontSize: 14 }}>
               <a href="#how" style={{ color: L.slate, textDecoration: "none" }}>How it works</a>
               <a href="#pricing" style={{ color: L.slate, textDecoration: "none" }}>Pricing</a>
-              <a href="#" style={{ color: L.slate, textDecoration: "none" }}>Privacy</a>
-              <a href="#" style={{ color: L.slate, textDecoration: "none" }}>Terms</a>
+              <a href="/privacy.html" style={{ color: L.slate, textDecoration: "none" }}>Privacy</a>
+              <a href="/consumer-health-privacy.html" style={{ color: L.slate, textDecoration: "none" }}>Health Data Privacy</a>
               <a href="mailto:advocacy@robinhealth.com" style={{ color: L.slate, textDecoration: "none" }}>Contact</a>
             </nav>
           </div>

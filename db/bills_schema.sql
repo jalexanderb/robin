@@ -357,3 +357,19 @@ ALTER TABLE cases
 -- Additive JSONB; absent for cases created before triage existed.
 ALTER TABLE cases
     ADD COLUMN IF NOT EXISTS triage_json JSONB;
+
+-- Per-case access token (capability) for authorization. We store only the
+-- SHA-256 hash of a high-entropy token minted at intake and handed to the
+-- client once; every case-scoped request must present the matching token
+-- (X-Case-Token header). NULL = legacy case created before tokens existed
+-- (access not gated for those, for backward compatibility).
+ALTER TABLE cases
+    ADD COLUMN IF NOT EXISTS access_token_hash TEXT;
+
+-- Consumer health-data / data-processing consent (separate from the fee
+-- agreement): records that the patient agreed we may process their bill and
+-- health data, including via our AI subprocessor, per the Privacy Policy.
+ALTER TABLE patients
+    ADD COLUMN IF NOT EXISTS data_processing_consent_accepted BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS data_processing_consent_accepted_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS data_processing_consent_version TEXT;

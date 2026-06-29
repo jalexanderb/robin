@@ -197,6 +197,11 @@ def process_case_intake(
         new_facility_queued = True
 
     if case_id is not None:
+        # Data minimization: the structured fields (line items, totals, codes)
+        # are what we need going forward; the full raw OCR/extracted text is the
+        # most sensitive part of the bill and isn't read back from the DB, so we
+        # don't persist it (mirrors the EOB, whose raw_text is also dropped).
+        bill.raw_text = None
         repository.persist_bill(
             case_id=case_id,
             bill=bill,

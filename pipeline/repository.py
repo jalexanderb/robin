@@ -19,6 +19,11 @@ a fix to this file.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import secrets
+import uuid
+
 import psycopg2.extras
 
 import db
@@ -446,6 +451,115 @@ def insert_case(patient_id: str) -> str:
             )
             case_id = cur.fetchone()[0]
     return str(case_id)
+
+
+# ============================================================
+# Per-case access token (capability-based authorization)
+# ============================================================
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def create_case_access_token(case_id: str) -> str:
+    """
+    Mint a high-entropy access token for a case, store only its SHA-256 hash,
+    and return the plaintext token (handed to the client once). Every
+    case-scoped request must then present the matching token.
+    """
+    token = secrets.token_urlsafe(32)
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE cases SET access_token_hash = %s, updated_at = now() WHERE id = %s",
+                (_hash_token(token), case_id),
+            )
+    return token
+
+
+def verify_case_access_token(case_id: str, token: str | None) -> bool:
+    """
+    Constant-time check that `token` grants access to `case_id`.
+
+    - Unknown / malformed case_id -> False.
+    - Case with NULL hash (created before tokens existed) -> True (legacy grace;
+      not retroactively locked out).
+    - Otherwise True only if sha256(token) matches the stored hash.
+    """
+    try:
+        uuid.UUID(str(case_id))
+    except (ValueError, AttributeError, TypeError):
+        return False
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT access_token_hash FROM cases WHERE id = %s", (case_id,))
+            row = cur.fetchone()
+    if row is None:
+        return False  # unknown case
+    stored = row[0]
+    if stored is None:
+        return True   # legacy case, access not gated
+    if not token:
+        return False
+    return hmac.compare_digest(stored, _hash_token(token))
+
+
+# ============================================================
+# Data deletion + retention
+# ============================================================
+
+def collect_case_storage_keys(case_id: str) -> list[str]:
+    """
+    Return every blob storage key associated with a case (uploaded bill, EOB,
+    and any generated/sent letters) so they can be purged from blob storage
+    when the case is deleted. DB rows themselves cascade-delete from `cases`.
+    """
+    keys: set[str] = set()
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT storage_key FROM bills WHERE case_id = %s", (case_id,))
+            for (k,) in cur.fetchall():
+                if k:
+                    keys.add(k)
+            cur.execute(
+                "SELECT e.storage_key FROM eobs e "
+                "JOIN bills b ON e.bill_id = b.id WHERE b.case_id = %s",
+                (case_id,),
+            )
+            for (k,) in cur.fetchall():
+                if k:
+                    keys.add(k)
+            cur.execute(
+                "SELECT nc.letter_storage_key FROM negotiation_contacts nc "
+                "JOIN negotiations n ON nc.negotiation_id = n.id "
+                "WHERE n.case_id = %s AND nc.letter_storage_key IS NOT NULL",
+                (case_id,),
+            )
+            for (k,) in cur.fetchall():
+                if k:
+                    keys.add(k)
+    return list(keys)
+
+
+def delete_case_row(case_id: str) -> bool:
+    """Delete a case row; bills/eobs/line-items/negotiations cascade. Returns
+    True if a row was deleted."""
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM cases WHERE id = %s", (case_id,))
+            return cur.rowcount > 0
+
+
+def fetch_case_ids_older_than(days: int) -> list[str]:
+    """Return case ids whose created_at is older than `days` days ago -- the
+    retention sweep's selection step."""
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM cases WHERE created_at < now() - (%s || ' days')::interval",
+                (str(days),),
+            )
+            return [str(r[0]) for r in cur.fetchall()]
 
 
 def persist_bill(

@@ -99,6 +99,7 @@ import llm_client
 import outcome_pipeline
 import pricing_pipeline
 import repository
+import retention
 import state_leverage
 import storage
 import synthesis
@@ -424,6 +425,36 @@ async def request_id_middleware(request: Request, call_next):
 
 
 # ============================================================
+# Per-case authorization middleware (Tier 1: fix IDOR on PHI endpoints)
+# ============================================================
+# Every /cases/{id}/... request must present the case's access token
+# (X-Case-Token header), minted at intake. Capability-based, so it fits the
+# no-login flow. Cases created before tokens existed (NULL hash) are not gated
+# (verify_case_access_token returns True), preserving backward compatibility.
+
+_CASE_PATH_RE = re.compile(r"^/cases/([^/]+)")
+
+
+@app.middleware("http")
+async def case_access_middleware(request: Request, call_next):
+    if request.method != "OPTIONS":  # never block CORS preflight
+        m = _CASE_PATH_RE.match(request.url.path)
+        if m:
+            case_id = m.group(1)
+            token = request.headers.get("X-Case-Token")
+            try:
+                allowed = repository.verify_case_access_token(case_id, token)
+            except Exception:  # noqa: BLE001 -- DB hiccup: don't 403, let the handler surface it
+                allowed = True
+            if not allowed:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Missing or invalid access token for this case."},
+                )
+    return await call_next(request)
+
+
+# ============================================================
 # Endpoints
 # ============================================================
 
@@ -513,6 +544,9 @@ async def intake(request: Request):
         household_income=household_income, household_size=household_size, state=state,
     )
     case_id = repository.insert_case(patient_id)
+    # Mint the per-case access token (capability) and return it to the client
+    # once; all later case-scoped requests must present it (X-Case-Token).
+    case_token = repository.create_case_access_token(case_id)
     storage_key = storage.save(document_bytes, bill_document.content_type)
 
     logger.info(
@@ -542,7 +576,7 @@ async def intake(request: Request):
     except httpx.HTTPError as exc:
         logger.warning("request_id=%s LLM endpoint error: %s", request_id, exc)
         return JSONResponse(status_code=503, content={
-            "patient_id": patient_id, "case_id": case_id,
+            "patient_id": patient_id, "case_id": case_id, "case_token": case_token,
             "detail": (
                 "The configured LLM endpoint is unreachable or returned an error "
                 f"(LLM_BASE_URL={os.environ.get('LLM_BASE_URL', '(default) http://localhost:8000/v1')}). "
@@ -552,7 +586,7 @@ async def intake(request: Request):
     except (KeyError, TypeError, ValueError) as exc:
         logger.warning("request_id=%s LLM parse error: %s", request_id, exc)
         return JSONResponse(status_code=502, content={
-            "patient_id": patient_id, "case_id": case_id,
+            "patient_id": patient_id, "case_id": case_id, "case_token": case_token,
             "detail": (
                 f"The LLM endpoint responded but its output couldn't be parsed: {exc}"
             ),
@@ -567,6 +601,7 @@ async def intake(request: Request):
     return JSONResponse(content=jsonable_encoder({
         "patient_id": patient_id,
         "case_id": case_id,
+        "case_token": case_token,
         "result": result,
     }))
 
@@ -607,7 +642,9 @@ async def chat(
         cleaned = cleaned[:4000]
 
     prompt = _build_chat_prompt(cleaned, context_json)
-    if case_id:
+    # Only fold in the (PHI-bearing) case context when the request carries this
+    # case's valid access token -- otherwise answer generically.
+    if case_id and repository.verify_case_access_token(case_id, request.headers.get("X-Case-Token")):
         case_ctx = _case_context_text(case_id)
         if case_ctx:
             prompt = f"{case_ctx}\n\n{prompt}"
@@ -662,6 +699,7 @@ async def agree_to_terms(
     request: Request,
     patient_id: str,
     affirmed: bool = Form(...),
+    data_processing_consent: bool = Form(False),
 ) -> JSONResponse:
     """
     Record that a patient has read and accepted the fee agreement.
@@ -669,6 +707,12 @@ async def agree_to_terms(
     `affirmed` must be true -- the caller (front-end) is responsible
     for confirming the patient actively checked a checkbox or clicked
     an explicit confirmation button, not just scrolled past the terms.
+
+    `data_processing_consent` (recorded when true) captures the separate
+    consumer-health-data / data-processing consent gathered at the same step:
+    the patient agreeing we may process their bill and health data, including
+    via our AI subprocessor, per the Privacy Policy. Versioned and stored
+    independently so it's auditable.
 
     Returns the updated agreement status including the timestamp.
     The stored terms text is the exact version shown to them, so the
@@ -688,16 +732,20 @@ async def agree_to_terms(
 
     try:
         outcome_pipeline.record_fee_agreement(patient_id)
+        if data_processing_consent:
+            outcome_pipeline.record_data_processing_consent(patient_id)
         status = outcome_pipeline.check_fee_agreement(patient_id)
         logger.info(
-            "request_id=%s patient_id=%s fee_agreement_accepted=True version=%s",
-            request_id, patient_id, outcome_pipeline.FEE_TERMS_VERSION,
+            "request_id=%s patient_id=%s fee_agreement_accepted=True version=%s data_processing_consent=%s",
+            request_id, patient_id, outcome_pipeline.FEE_TERMS_VERSION, bool(data_processing_consent),
         )
         return JSONResponse(content={
             "patient_id": patient_id,
             "accepted": True,
             "accepted_at": status["accepted_at"],
             "terms_version": status["terms_version"],
+            "data_processing_consent": bool(data_processing_consent),
+            "data_processing_consent_version": outcome_pipeline.DATA_PROCESSING_CONSENT_VERSION,
             "message": (
                 "Fee agreement recorded. You may now proceed with your "
                 "medical bills. You'll never pay more than $50/month, or 20% "
@@ -900,6 +948,35 @@ async def get_case_full(request: Request, case_id: str) -> JSONResponse:
         "synthesis": repository.fetch_case_synthesis(case_id),
         "negotiation": outcome_pipeline.fetch_negotiation_for_case(case_id),
     }))
+
+
+@app.delete("/cases/{case_id}")
+@limiter.limit(f"{_RATE_LIMIT_PER_MINUTE}/minute")
+async def delete_case(request: Request, case_id: str) -> JSONResponse:
+    """
+    Erase a case and all its data -- the bill, EOB, generated letters, analysis,
+    and negotiation history (DB rows cascade; blob files are removed too). This
+    is the patient's right-to-delete (CCPA/MHMDA). Requires the case's access
+    token (enforced by the case-access middleware), so only the case owner can
+    invoke it. Idempotent: deleting an already-gone case returns deleted=false.
+    """
+    _check_auth(request)
+    request_id = getattr(request.state, "request_id", "-")
+    result = retention.delete_case(case_id)
+    logger.info(
+        "request_id=%s case_id=%s deleted=%s blobs=%d",
+        request_id, case_id, result["deleted"], result["blobs_deleted"],
+    )
+    return JSONResponse(content={
+        "case_id": case_id,
+        "deleted": result["deleted"],
+        "blobs_deleted": result["blobs_deleted"],
+        "message": (
+            "Your case and all associated data have been permanently deleted."
+            if result["deleted"]
+            else "No matching case found (it may already have been deleted)."
+        ),
+    })
 
 
 def _triage_norm_bool(v: Optional[str]) -> Optional[bool]:

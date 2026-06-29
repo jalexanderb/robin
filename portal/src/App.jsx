@@ -16,9 +16,17 @@ const API_BASE = (typeof import.meta !== "undefined" && import.meta.env && impor
 // doesn't have.
 const API_KEY = (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_API_KEY) || "";
 
+// Per-case access token (capability) minted by /intake. Held module-level so
+// apiFetch can attach it to every request automatically; the backend only
+// checks it on /cases/* endpoints, so sending it elsewhere is harmless. It is
+// a random capability, not PHI — safe to keep for the session and in resume.
+let _caseToken = null;
+const setCaseTokenGlobal = (t) => { _caseToken = t || null; };
+
 const apiFetch = (url, options = {}) => {
   const headers = { ...(options.headers || {}) };
   if (API_KEY) headers["Authorization"] = `Bearer ${API_KEY}`;
+  if (_caseToken) headers["X-Case-Token"] = _caseToken;
   return fetch(url, { ...options, headers });
 };
 
@@ -418,10 +426,11 @@ function Chat({ embedded, onHome }) {
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: reduce ? "auto" : "smooth" });
   }, [messages, typing]);
 
-  // Persist the opaque case pointer as it changes (never for the demo case).
+  // Persist the opaque case pointer (+ its access token) as it changes, never
+  // for the demo case. The token is a random capability, not PHI.
   useEffect(() => {
     if (caseId && caseId !== "demo-case-001") {
-      saveResume({ caseId, patientId, plan, negotiationStarted });
+      saveResume({ caseId, patientId, plan, negotiationStarted, caseToken: _caseToken });
     }
   }, [caseId, patientId, plan, negotiationStarted]);
 
@@ -508,6 +517,9 @@ function Chat({ embedded, onHome }) {
       try {
         const agreeFd = new FormData();
         agreeFd.append("affirmed", "true");
+        // Choosing a plan also records the data-processing / consumer-health-data
+        // consent (per the Privacy Policy), captured at this same step.
+        agreeFd.append("data_processing_consent", "true");
         await apiFetch(`${API_BASE}/patients/${patientId}/agree-to-terms`, { method: "POST", body: agreeFd });
         const planFd = new FormData();
         planFd.append("plan", planId);
@@ -871,6 +883,7 @@ function Chat({ embedded, onHome }) {
     setResumeAvailable(null);
     setPatientId(r.patientId || null);
     setCaseId(r.caseId);
+    setCaseTokenGlobal(r.caseToken);  // restore the capability needed to read the case
     if (r.plan) setPlan(r.plan);
     setTyping(true);
     try {
@@ -943,6 +956,9 @@ function Chat({ embedded, onHome }) {
       await new Promise(r => setTimeout(r, 300));
       if (cancelled) return;
       addMsg({ from: "robin", text: "Hi, I'm Robin — your automated health advocate. I help people fight back against confusing medical bills. It's important to know this product is still in beta testing and everything should be reviewed carefully by you, the user." });
+      await new Promise(r => setTimeout(r, 900));
+      if (cancelled) return;
+      addMsg({ from: "robin", text: "A quick note on privacy: I process your bill securely to help you — including using a trusted AI provider to read it — and I never sell your data. You can delete everything at any time. Full details are in the Privacy Policy linked just below the message box." });
       await new Promise(r => setTimeout(r, 900));
       if (cancelled) return;
       setTyping(true);
@@ -1021,6 +1037,7 @@ function Chat({ embedded, onHome }) {
       setBillResult(result);
       setPatientId(data.patient_id);
       setCaseId(data.case_id);
+      setCaseTokenGlobal(data.case_token);  // required on all later case calls
     } catch (e) {
       console.warn("API unreachable, using demo data:", e.message);
       result = MOCK_RESULT.result;
@@ -1086,6 +1103,26 @@ Sincerely,
 
 ---
 This letter was prepared with assistance from Robin (robinhealth.com), an AI-enabled patient advocacy service. Robin is in beta — please review all content carefully before sending.`;
+  };
+
+  // ── Delete the patient's case + all data (right to delete) ────────────────
+  const deleteCaseData = async () => {
+    if (!caseId || caseId === "demo-case-001") { clearResume(); setResumeAvailable(null); return; }
+    if (!window.confirm("Delete your case and all associated data (bill, letters, analysis)? This can't be undone.")) return;
+    try {
+      await apiFetch(`${API_BASE}/cases/${caseId}`, { method: "DELETE" });
+    } catch (e) {
+      console.warn("delete failed:", e.message);
+    }
+    clearResume();
+    setResumeAvailable(null);
+    setCaseTokenGlobal(null);
+    setCaseId(null);
+    setPatientId(null);
+    setBillResult(null);
+    setNegotiationStarted(false);
+    await robinSay("Done — your case and all associated data have been permanently deleted. You can upload a new bill whenever you're ready.", 400);
+    setStage("welcome");
   };
 
   // ── Fetch + show the recommended step-by-step plan (case strategy) ────────
@@ -1208,7 +1245,7 @@ This letter was prepared with assistance from Robin (robinhealth.com), an AI-ena
       setStage("ask_letter");
     } else {
       await robinSay(
-        "Before we go further, here's how our pricing works: you'll never pay more than $50/month, or 20% of what we save you (and never more than $1,000). Choosing a plan also confirms you've read and agree to our fee terms — tap “Read the full terms” first if you'd like. Pick whichever fits you best:",
+        "Before we go further, here's how our pricing works: you'll never pay more than $50/month, or 20% of what we save you (and never more than $1,000). Choosing a plan also confirms you've read and agree to our fee terms, and that you consent to us processing your bill and health data — including via our AI provider — to help you, as described in our Privacy Policy (linked below the message box). Tap “Read the full terms” for the fee details. Pick whichever fits you best:",
         700
       );
       setStage("ask_plan");
@@ -1671,6 +1708,22 @@ This letter was prepared with assistance from Robin (robinhealth.com), an AI-ena
             ↑
           </button>
         </div>
+        {/* Standing privacy disclosure — transparency about data handling */}
+        <p style={{ margin: "8px 4px 0", fontSize: 11, lineHeight: 1.5, color: "#8C8A87", textAlign: "center" }}>
+          🔒 Your bill is processed securely to help you, including by our AI provider. We never sell your data.{" "}
+          <a href="/privacy.html" target="_blank" rel="noopener" style={{ color: "#B8B6B2", textDecoration: "underline" }}>Privacy Policy</a>
+          {" · "}
+          <a href="/consumer-health-privacy.html" target="_blank" rel="noopener" style={{ color: "#B8B6B2", textDecoration: "underline" }}>Health Data Privacy</a>
+          {caseId && caseId !== "demo-case-001" && (
+            <>
+              {" · "}
+              <button onClick={deleteCaseData}
+                style={{ background: "none", border: "none", padding: 0, font: "inherit", color: "#B8B6B2", textDecoration: "underline", cursor: "pointer" }}>
+                Delete my data
+              </button>
+            </>
+          )}
+        </p>
       </div>
     </div>
   );

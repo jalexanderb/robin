@@ -1517,6 +1517,59 @@ def record_fee_agreement(patient_id: str) -> None:
                 raise ValueError(f"No patient found with id={patient_id!r}")
 
 
+# Consumer health-data / data-processing consent, versioned and recorded
+# separately from the fee agreement so it's independently auditable.
+DATA_PROCESSING_CONSENT_VERSION = "v1.0"
+
+
+def record_data_processing_consent(patient_id: str) -> None:
+    """
+    Record that a patient consented to RobinHealth processing their bill and
+    health data (including via our AI subprocessor) per the Privacy Policy and
+    Consumer Health Data Privacy Policy. Idempotent.
+    """
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE patients SET
+                    data_processing_consent_accepted = TRUE,
+                    data_processing_consent_accepted_at = now(),
+                    data_processing_consent_version = %s,
+                    updated_at = now()
+                WHERE id = %s
+                """,
+                (DATA_PROCESSING_CONSENT_VERSION, patient_id),
+            )
+            if cur.rowcount == 0:
+                raise ValueError(f"No patient found with id={patient_id!r}")
+
+
+def check_data_processing_consent(patient_id: str) -> dict:
+    """Return the patient's data-processing consent status."""
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT data_processing_consent_accepted,
+                       data_processing_consent_accepted_at,
+                       data_processing_consent_version
+                FROM patients WHERE id = %s
+                """,
+                (patient_id,),
+            )
+            row = cur.fetchone()
+    if row is None:
+        raise ValueError(f"No patient found with id={patient_id!r}")
+    accepted, accepted_at, version = row
+    return {
+        "accepted": bool(accepted),
+        "accepted_at": accepted_at.isoformat() if accepted_at else None,
+        "consent_version": version,
+        "current_consent_version": DATA_PROCESSING_CONSENT_VERSION,
+    }
+
+
 def check_fee_agreement(patient_id: str) -> dict:
     """
     Return the patient's fee agreement status.
