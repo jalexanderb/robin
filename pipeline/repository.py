@@ -508,6 +508,36 @@ def verify_case_access_token(case_id: str, token: str | None) -> bool:
 # Data deletion + retention
 # ============================================================
 
+def record_case_letter(case_id: str, storage_key: str) -> None:
+    """Bind a generated letter PDF (by storage_key) to its case, so the letter
+    endpoint can authorize access by the case's token and so the blob is purged
+    on deletion."""
+    if not storage_key:
+        return
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO case_letters (case_id, storage_key) VALUES (%s, %s)",
+                (case_id, storage_key),
+            )
+
+
+def fetch_case_id_for_letter(storage_key: str) -> str | None:
+    """Return the case a letter storage_key belongs to (most recent), or None if
+    the key isn't bound to any case (e.g. a standalone/legacy blob)."""
+    if not storage_key:
+        return None
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT case_id FROM case_letters WHERE storage_key = %s "
+                "ORDER BY created_at DESC LIMIT 1",
+                (storage_key,),
+            )
+            row = cur.fetchone()
+    return str(row[0]) if row else None
+
+
 def collect_case_storage_keys(case_id: str) -> list[str]:
     """
     Return every blob storage key associated with a case (uploaded bill, EOB,
@@ -535,6 +565,10 @@ def collect_case_storage_keys(case_id: str) -> list[str]:
                 "WHERE n.case_id = %s AND nc.letter_storage_key IS NOT NULL",
                 (case_id,),
             )
+            for (k,) in cur.fetchall():
+                if k:
+                    keys.add(k)
+            cur.execute("SELECT storage_key FROM case_letters WHERE case_id = %s", (case_id,))
             for (k,) in cur.fetchall():
                 if k:
                     keys.add(k)

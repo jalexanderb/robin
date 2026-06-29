@@ -30,10 +30,11 @@ const apiFetch = (url, options = {}) => {
   return fetch(url, { ...options, headers });
 };
 
-// Open a letter PDF. A plain link can't carry the bearer header, so when a key
-// is configured we fetch the bytes (authenticated) and open a blob URL instead.
+// Open a letter PDF. The letter endpoint now requires the per-case access
+// token (and possibly a bearer key), and a plain link/window.open can't carry
+// those headers — so we always fetch the bytes via apiFetch (which attaches
+// X-Case-Token + any API key) and open a blob URL instead.
 const openLetter = async (url) => {
-  if (!API_KEY) { window.open(url, "_blank", "noopener"); return; }
   try {
     const resp = await apiFetch(url);
     if (!resp.ok) throw new Error(String(resp.status));
@@ -44,7 +45,6 @@ const openLetter = async (url) => {
     setTimeout(() => URL.revokeObjectURL(obj), 60000);
   } catch (e) {
     console.warn("open letter failed:", e.message);
-    window.open(url, "_blank", "noopener");
   }
 };
 const SESSION_TIMEOUT_MS = 15 * 60 * 1000;

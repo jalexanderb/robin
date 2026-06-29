@@ -235,11 +235,13 @@ def _complete_openai_compatible(
     )
     response.raise_for_status()
     data = response.json()
-    # Log the full response for debugging (truncated to 500 chars)
+    # Do NOT log the raw response at INFO -- for bill/EOB extraction it contains
+    # PHI (provider, amounts, codes). Log only safe metadata; the full body is
+    # available at DEBUG for non-production troubleshooting.
     import logging
-    logging.getLogger("robinhealth.llm").info(
-        "LLM raw response: %s", str(data)[:2000]
-    )
+    _llm_log = logging.getLogger("robinhealth.llm")
+    _llm_log.info("LLM response received (%d chars)", len(str(data)))
+    _llm_log.debug("LLM raw response: %s", str(data)[:2000])
     content_raw = data["choices"][0]["message"]["content"]
     # Some models return None content when they only emit tool_calls
     # or when the response is in a different field

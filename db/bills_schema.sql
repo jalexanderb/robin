@@ -373,3 +373,16 @@ ALTER TABLE patients
     ADD COLUMN IF NOT EXISTS data_processing_consent_accepted BOOLEAN NOT NULL DEFAULT FALSE,
     ADD COLUMN IF NOT EXISTS data_processing_consent_accepted_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS data_processing_consent_version TEXT;
+
+-- Letters generated for a case (drafts and sent). Binding a stored letter PDF
+-- to its case lets us (a) gate /letters/{storage_key} on the case's access
+-- token -- only the owner can fetch a PHI-bearing letter -- and (b) purge the
+-- blob when the case is deleted.
+CREATE TABLE IF NOT EXISTS case_letters (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    case_id UUID NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+    storage_key TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_case_letters_storage_key ON case_letters(storage_key);
+CREATE INDEX IF NOT EXISTS idx_case_letters_case ON case_letters(case_id);

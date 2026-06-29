@@ -411,11 +411,14 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 async def request_id_middleware(request: Request, call_next):
     request_id = str(uuid.uuid4())
     request.state.request_id = request_id
+    # Don't log the client IP (PII). The rate limiter still keys on it
+    # independently; logging it here added persistent PII to our logs for no
+    # operational gain. Enable at DEBUG if needed for abuse investigation.
     logger.info(
-        "request_id=%s method=%s path=%s ip=%s",
+        "request_id=%s method=%s path=%s",
         request_id, request.method, request.url.path,
-        get_remote_address(request),
     )
+    logger.debug("request_id=%s ip=%s", request_id, get_remote_address(request))
     response = await call_next(request)
     response.headers["X-Request-ID"] = request_id
     logger.info(
@@ -1408,6 +1411,7 @@ async def draft_letter(
             )
 
         storage_key = storage.save(pdf_bytes, "application/pdf")
+        repository.record_case_letter(case_id, storage_key)  # bind to case for access control + cleanup
         logger.info(
             "request_id=%s case_id=%s reference=%s pdf_size=%d",
             request_id, case_id, reference_number, len(pdf_bytes),
@@ -1462,6 +1466,7 @@ async def appeal_letter(
             denial_reason=denial_reason,
         )
         storage_key = storage.save(pdf_bytes, "application/pdf")
+        repository.record_case_letter(case_id, storage_key)  # bind to case for access control + cleanup
         logger.info(
             "request_id=%s case_id=%s appeal reference=%s pdf_size=%d",
             request_id, case_id, reference_number, len(pdf_bytes),
@@ -1490,10 +1495,22 @@ async def get_letter(request: Request, storage_key: str):
     storage_keys are content-addressed sha256 hashes -- effectively
     unguessable capability tokens. Path traversal is doubly prevented:
     storage.load() strips to basename, and the key shape is validated here.
+
+    Additionally, a letter bound to a case (the normal case -- see
+    repository.record_case_letter) requires that case's access token
+    (X-Case-Token), so a PHI-bearing letter can't be fetched with only its hash.
     """
     _check_auth(request)
     if not _STORAGE_KEY_RE.match(storage_key):
         raise HTTPException(status_code=400, detail="Invalid storage_key")
+    owning_case = repository.fetch_case_id_for_letter(storage_key)
+    if owning_case is not None and not repository.verify_case_access_token(
+        owning_case, request.headers.get("X-Case-Token")
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Missing or invalid access token for this letter.",
+        )
     try:
         data = storage.load(storage_key)
     except FileNotFoundError:
