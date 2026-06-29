@@ -521,6 +521,75 @@ def fetch_case_synthesis(case_id: str) -> dict | None:
     return row[0] if (row and row[0] is not None) else None
 
 
+def persist_case_triage(case_id: str, triage: dict) -> None:
+    """Store (merge) the patient's triage facts (JSONB) that drive case strategy.
+
+    Merges into any existing triage_json so answers gathered across multiple
+    turns accumulate rather than overwrite each other."""
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE cases SET triage_json = COALESCE(triage_json, '{}'::jsonb) || %s, "
+                "updated_at = now() WHERE id = %s",
+                (psycopg2.extras.Json(triage), case_id),
+            )
+
+
+def fetch_case_triage(case_id: str) -> dict | None:
+    """Return the stored triage facts dict for a case, or None if not stored."""
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT triage_json FROM cases WHERE id = %s", (case_id,))
+            row = cur.fetchone()
+    return row[0] if (row and row[0] is not None) else None
+
+
+def fetch_facility_id_for_case(case_id: str) -> str | None:
+    """Return the facility_id linked to a case's most recent bill, or None."""
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT facility_id FROM bills WHERE case_id = %s AND facility_id IS NOT NULL "
+                "ORDER BY created_at DESC LIMIT 1",
+                (case_id,),
+            )
+            row = cur.fetchone()
+    return str(row[0]) if (row and row[0] is not None) else None
+
+
+def fetch_facility_outcomes(facility_id: str) -> list[dict]:
+    """
+    Return resolved-negotiation outcomes for every case at a facility -- the raw
+    material for the learning loop (learning.summarize_outcomes). Only rows with
+    an agreed amount are returned (a resolved outcome). Each dict has
+    billed_amount, agreed_amount, and days_to_resolve.
+    """
+    with db.connection() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT n.original_billed_amount AS billed_amount,
+                       n.agreed_amount          AS agreed_amount,
+                       EXTRACT(EPOCH FROM (n.updated_at - n.created_at)) / 86400.0
+                                                AS days_to_resolve
+                FROM negotiations n
+                JOIN bills b ON b.case_id = n.case_id
+                WHERE b.facility_id = %s AND n.agreed_amount IS NOT NULL
+                """,
+                (facility_id,),
+            )
+            rows = cur.fetchall()
+    # Normalize Decimal -> float for the pure-Python learning layer.
+    out: list[dict] = []
+    for r in rows:
+        out.append({
+            "billed_amount": float(r["billed_amount"]) if r["billed_amount"] is not None else None,
+            "agreed_amount": float(r["agreed_amount"]) if r["agreed_amount"] is not None else None,
+            "days_to_resolve": float(r["days_to_resolve"]) if r["days_to_resolve"] is not None else None,
+        })
+    return out
+
+
 def fetch_bill_for_case(case_id: str) -> dict | None:
     """
     Return the most recent bill for a case as a plain dict (provider, totals,

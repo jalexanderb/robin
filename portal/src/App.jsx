@@ -147,8 +147,63 @@ function Bubble({ msg }) {
             </div>
             {msg.card.reasons?.map((r, i) => (
               <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6 }}>
-                <span style={{ fontSize: 14, flexShrink: 0 }}>{r.outcome_type === "partial_reduction" ? "💰" : "⚖️"}</span>
+                <span style={{ fontSize: 14, flexShrink: 0 }}>{r.outcome_type === "partial_reduction" ? "💰" : r.outcome_type === "billing_error" ? "🔎" : "⚖️"}</span>
                 <p style={{ color: "#AAA", fontSize: 12, lineHeight: 1.5, margin: 0 }}>{r.summary}</p>
+              </div>
+            ))}
+            {msg.card.findings?.length > 0 && (
+              <div style={{ borderTop: "1px solid #2A2A2A", marginTop: 10, paddingTop: 10 }}>
+                <p style={{ color: "#A8A6A2", fontSize: 11, margin: "0 0 6px", letterSpacing: "0.5px" }}>
+                  SPECIFIC ISSUES WE FOUND
+                </p>
+                {msg.card.findings.slice(0, 5).map((f, i) => (
+                  <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+                    <span style={{ fontSize: 14, flexShrink: 0 }}>🔎</span>
+                    <p style={{ color: "#CFCFCF", fontSize: 12, lineHeight: 1.5, margin: 0 }}>{f.patient_summary}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        {/* Strategy / plan card — the recommended ordered playbook */}
+        {msg.strategy && (
+          <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "16px 20px", minWidth: 280 }}>
+            <p style={{ color: C.muted, fontSize: 11, margin: "0 0 4px", letterSpacing: "0.5px" }}>YOUR PLAN</p>
+            {msg.strategy.headline && (
+              <p style={{ color: C.dark, fontSize: 13, fontWeight: 600, lineHeight: 1.5, margin: "0 0 12px" }}>{msg.strategy.headline}</p>
+            )}
+            <ol style={{ margin: 0, padding: 0, listStyle: "none", counterReset: "step" }}>
+              {(msg.strategy.steps || []).map((s, i) => (
+                <div key={i} style={{ display: "flex", gap: 10, marginBottom: 10, alignItems: "flex-start" }}>
+                  <span style={{ width: 22, height: 22, borderRadius: "50%", background: C.redLight, color: C.red, fontWeight: 700, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{i + 1}</span>
+                  <div>
+                    <p style={{ color: C.dark, fontSize: 13, fontWeight: 600, margin: "1px 0 1px" }}>{s.title}</p>
+                    <p style={{ color: C.slate, fontSize: 12, lineHeight: 1.5, margin: 0 }}>{s.detail}</p>
+                  </div>
+                </div>
+              ))}
+            </ol>
+          </div>
+        )}
+        {/* Phone-script card — what to say when calling the billing department */}
+        {msg.script && (
+          <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "16px 20px", minWidth: 280 }}>
+            <p style={{ fontWeight: 700, color: C.dark, fontSize: 13, margin: "0 0 4px" }}>📞 Your call script</p>
+            {msg.script.headline && (
+              <p style={{ color: C.slate, fontSize: 12, lineHeight: 1.5, margin: "0 0 6px" }}>{msg.script.headline}</p>
+            )}
+            {msg.script.who_to_ask_for && (
+              <p style={{ color: C.dark, fontSize: 12, margin: "0 0 12px" }}>
+                <b>Ask for:</b> {msg.script.who_to_ask_for}
+              </p>
+            )}
+            {(msg.script.sections || []).map((sec, i) => (
+              <div key={i} style={{ marginBottom: 12 }}>
+                <p style={{ color: C.red, fontSize: 11, fontWeight: 700, letterSpacing: "0.3px", margin: "0 0 4px", textTransform: "uppercase" }}>{sec.title}</p>
+                {(sec.lines || []).map((line, j) => (
+                  <p key={j} style={{ color: C.slate, fontSize: 12, lineHeight: 1.55, margin: "0 0 4px" }}>{line}</p>
+                ))}
               </div>
             ))}
           </div>
@@ -405,6 +460,10 @@ function Chat({ embedded, onHome }) {
       fd.append("message", text);
       const ctx = buildChatContext();
       if (ctx) fd.append("context_json", JSON.stringify(ctx));
+      // case_id lets Robin read the authoritative server-side case state
+      // (the specific findings, the strategy, negotiation status) and answer
+      // about THIS bill concretely.
+      if (caseId) fd.append("case_id", caseId);
       const resp = await apiFetch(`${API_BASE}/chat`, { method: "POST", body: fd });
       const data = await resp.json();
       setTyping(false);
@@ -1029,6 +1088,55 @@ Sincerely,
 This letter was prepared with assistance from Robin (robinhealth.com), an AI-enabled patient advocacy service. Robin is in beta — please review all content carefully before sending.`;
   };
 
+  // ── Fetch + show the recommended step-by-step plan (case strategy) ────────
+  const showStrategy = async () => {
+    if (!caseId) return;
+    try {
+      // Persist coverage from what we already asked, so the archetype is right.
+      const coverage = insuranceStatus === "insured" ? "insured"
+        : insuranceStatus === "uninsured" ? "self_pay" : null;
+      if (coverage) {
+        const tfd = new FormData();
+        tfd.append("coverage", coverage);
+        await apiFetch(`${API_BASE}/cases/${caseId}/triage`, { method: "POST", body: tfd });
+      }
+      const resp = await apiFetch(`${API_BASE}/cases/${caseId}/strategy`);
+      const data = await resp.json();
+      const strategy = data?.strategy;
+      if (strategy?.steps?.length) {
+        await robinSay("Here's the step-by-step plan I'd recommend:", 700, { strategy });
+      }
+    } catch (e) {
+      console.warn("strategy unreachable:", e.message);  // non-fatal — skip the card
+    }
+  };
+
+  // ── Fetch + show a phone-call script for this case ────────────────────────
+  const getPhoneScript = async () => {
+    userSay("Get a phone script");
+    if (!caseId) {
+      await robinSay("Upload your bill first and I'll build you a call script tailored to it.", 500);
+      return;
+    }
+    try {
+      const resp = await apiFetch(`${API_BASE}/cases/${caseId}/phone-script`);
+      const data = await resp.json();
+      const script = data?.phone_script;
+      if (script?.sections?.length) {
+        await robinSay(
+          "Here's exactly what to say if you'd rather call them. Read it at your own pace — and remember, you never have to agree to anything on the spot.",
+          700,
+          { script }
+        );
+      } else {
+        await robinSay("I couldn't build a script just now — try again in a moment.", 500);
+      }
+    } catch (e) {
+      console.warn("phone-script unreachable:", e.message);
+      await robinSay("I had trouble building your call script just now. You can try again, or I can draft a letter instead.", 500);
+    }
+  };
+
   // ── Show analysis and ask about letter ───────────────────────────────────
   const showAnalysis = async (resultOverride) => {
     const r = resultOverride || billResult;
@@ -1047,6 +1155,7 @@ This letter was prepared with assistance from Robin (robinhealth.com), an AI-ena
         card: {
           billed, low, saving,
           reasons: synthesis?.reasons || [],
+          findings: synthesis?.line_item_findings || [],
         }
       } : {}
     );
@@ -1088,6 +1197,10 @@ This letter was prepared with assistance from Robin (robinhealth.com), an AI-ena
         700
       );
     }
+
+    // Step-by-step plan: persist what we know (coverage) so the archetype is
+    // accurate, then fetch and show the recommended ordered playbook.
+    await showStrategy(r);
 
     if (plan) {
       // Already chose a plan on an earlier bill — don't re-ask pricing.
@@ -1423,6 +1536,16 @@ This letter was prepared with assistance from Robin (robinhealth.com), an AI-ena
           <button onClick={() => { userSay("Appeal to my insurer"); startInsurerAppeal(); }}
             style={{ textAlign: "left", background: C.charcoal, border: `1px solid ${C.red}55`, borderRadius: 12, padding: "12px 14px", cursor: "pointer", color: C.white, fontWeight: 600, fontSize: 14 }}>
             Appeal the claim with my insurer
+          </button>
+        </div>
+      )}
+
+      {/* Phone-script offer — prefer to call instead of (or before) a letter */}
+      {(stage === "ask_letter" || stage === "done") && (
+        <div style={{ padding: "0 16px 10px", display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button onClick={getPhoneScript}
+            style={{ background: "none", border: `1px solid ${C.red}55`, borderRadius: 20, padding: "8px 16px", color: C.white, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+            📞 Prefer to call? Get a phone script
           </button>
         </div>
       )}

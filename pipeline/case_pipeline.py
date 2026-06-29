@@ -36,6 +36,7 @@ from dataclasses import dataclass, asdict
 
 import bill_pipeline
 import eob_pipeline
+import line_item_audit
 import pricing_pipeline
 import repository
 import synthesis
@@ -301,7 +302,12 @@ def process_case_intake(
             mrf_status=mrf_finding.get("mrf_status") if mrf_finding else None,
             mrf_status_detail=mrf_finding.get("status_detail") if mrf_finding else None,
         )
-        result = synthesis.synthesize(synthesis_input)
+        # Line-item audit: look inside the bill for duplicates, unbundling
+        # (NCCI), and excess-units (MUE) errors. Deterministic, no external
+        # call -- uses the embedded conservative reference seed unless the full
+        # CMS quarterly files have been loaded and passed in.
+        line_findings = line_item_audit.audit_line_items(bill.line_items)
+        result = synthesis.synthesize(synthesis_input, line_item_findings=line_findings)
 
     # Persist the synthesis (as JSONB) so the analysis can be restored later
     # (e.g. when a patient resumes their case). OutcomeType is a str-Enum, so

@@ -15,16 +15,18 @@ prompt discipline alone.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 from compliance_checklist import CHECKLIST_BY_CODE, ComplianceStatus
 from fap_pipeline import ComplianceFinding, EligibilityTier
 from fpl_lookup import income_as_fpl_percent
+from line_item_audit import LineItemFinding, finding_from_dict, total_estimated_overcharge
 
 
 class OutcomeType(str, Enum):
     FULL_ELIMINATION = "full_elimination"
+    BILLING_ERROR = "billing_error"  # specific, factual coding/charge error on a line
     PARTIAL_REDUCTION = "partial_reduction"
     PROCEDURAL_LEVERAGE = "procedural_leverage"  # no dollar estimate yet, but relevant
 
@@ -72,6 +74,11 @@ class Reason:
     estimated_low: float | None
     estimated_high: float | None
     source_requirement_codes: list[str]  # for optional "tell me more" expansion
+    # What this reduction is grounded in -- drives accurate, source-specific
+    # letter language so a pricing/MRF/EOB reduction is never mis-attributed to
+    # financial-assistance/income. One of: "fap", "pricing", "mrf_cash",
+    # "mrf_negotiated", "eob_allowed", "billing_error", or None.
+    basis: str | None = None
 
 
 @dataclass
@@ -88,6 +95,11 @@ class SynthesisResult:
     reasons: list[Reason]
     follow_up_questions: list[FollowUpQuestion]
     beta_caveat: str
+    # Specific line-item billing errors (duplicates, unbundling, excess units)
+    # detected by line_item_audit. Carried through to the letter so each one
+    # becomes its own numbered argument; the user-facing `reasons` list above
+    # summarizes them as a single aggregate BILLING_ERROR reason instead.
+    line_item_findings: list[LineItemFinding] = field(default_factory=list)
 
 
 def synthesis_from_dict(d: dict) -> "SynthesisResult":
@@ -110,7 +122,9 @@ def synthesis_from_dict(d: dict) -> "SynthesisResult":
             estimated_low=r.get("estimated_low"),
             estimated_high=r.get("estimated_high"),
             source_requirement_codes=r.get("source_requirement_codes") or [],
+            basis=r.get("basis"),
         ))
+    findings = [finding_from_dict(f) for f in (d.get("line_item_findings") or [])]
     return SynthesisResult(
         headline_low=d.get("headline_low"),
         headline_high=d.get("headline_high"),
@@ -118,6 +132,7 @@ def synthesis_from_dict(d: dict) -> "SynthesisResult":
         reasons=reasons,
         follow_up_questions=[],
         beta_caveat=d.get("beta_caveat", ""),
+        line_item_findings=findings,
     )
 
 
@@ -215,6 +230,7 @@ def estimate_eligibility_outcome(input_data: SynthesisInput) -> Reason | None:
             estimated_low=0,
             estimated_high=0,
             source_requirement_codes=[],
+            basis="fap",
         )
 
     if tier.discount_type in ("percentage_discount", "sliding_scale"):
@@ -231,6 +247,7 @@ def estimate_eligibility_outcome(input_data: SynthesisInput) -> Reason | None:
             estimated_low=round(reduced, 2),
             estimated_high=billed,
             source_requirement_codes=[],
+            basis="fap",
         )
 
     if tier.discount_type == "flat_cap":
@@ -247,6 +264,7 @@ def estimate_eligibility_outcome(input_data: SynthesisInput) -> Reason | None:
             estimated_low=round(capped, 2),
             estimated_high=billed,
             source_requirement_codes=[],
+            basis="fap",
         )
 
     return None
@@ -276,16 +294,31 @@ def findings_to_reasons(
                 * 100
             )
             if delta_pct > 50:  # threshold for surfacing; tune empirically
+                # Anchor the target on a *defensible fair price* (the Medicare-
+                # multiplier or MRF-derived estimate), not the raw Medicare rate:
+                # asking a provider to accept bare Medicare for a self-pay
+                # patient isn't credible, whereas a fair-price multiple is a
+                # realistic, persuasive negotiation target.
+                fair = (
+                    pricing.fair_price_estimate
+                    if (pricing.fair_price_estimate and pricing.fair_price_estimate > 0)
+                    else pricing.medicare_rate
+                )
+                mult = fair / pricing.medicare_rate if pricing.medicare_rate else None
                 reasons.append(Reason(
                     outcome_type=OutcomeType.PARTIAL_REDUCTION,
                     summary=(
-                        f"This charge is roughly {delta_pct:.0f}% higher than "
-                        f"what Medicare pays for the same service -- which is "
-                        f"often a starting point for negotiation."
+                        f"This charge is roughly {delta_pct:.0f}% higher than what "
+                        f"Medicare pays. A defensible fair price for these services "
+                        f"is around ${fair:,.0f}"
+                        + (f" (about {mult:.1f}x the Medicare rate)" if mult else "")
+                        + f", versus the ${pricing.billed_amount:,.0f} billed -- a "
+                        f"common, well-supported negotiation target."
                     ),
-                    estimated_low=pricing.medicare_rate,
+                    estimated_low=round(fair, 2),
                     estimated_high=pricing.billed_amount,
                     source_requirement_codes=[],
+                    basis="pricing",
                 ))
         elif pricing.medicare_rate == 0 and pricing.billed_amount > 0:
             # `if pricing.medicare_rate:` (falsy-zero) used to silently
@@ -304,6 +337,7 @@ def findings_to_reasons(
                 estimated_low=0,
                 estimated_high=pricing.billed_amount,
                 source_requirement_codes=[],
+                basis="pricing",
             ))
 
     for finding in findings:
@@ -376,6 +410,7 @@ def _mrf_rates_reason(input_data: SynthesisInput) -> Reason | None:
                 estimated_low=round(savings * 0.85),  # usually gets most or all
                 estimated_high=round(savings),
                 source_requirement_codes=[],
+                basis="mrf_cash",
             )
 
         # Sub-case 2: negotiated range available
@@ -395,6 +430,7 @@ def _mrf_rates_reason(input_data: SynthesisInput) -> Reason | None:
                 estimated_low=max(round(savings_low), 0),
                 estimated_high=round(savings_high),
                 source_requirement_codes=[],
+                basis="mrf_negotiated",
             )
 
     # Negative status cases → procedural leverage (no dollar estimate)
@@ -452,10 +488,63 @@ def _eob_allowed_amount_reason(input_data: SynthesisInput) -> Reason | None:
         estimated_low=round(savings * 0.7),   # conservative: provider may not agree fully
         estimated_high=round(savings),
         source_requirement_codes=[],
+        basis="eob_allowed",
     )
 
 
-def synthesize(input_data: SynthesisInput) -> SynthesisResult:
+def _billing_error_reason(
+    findings: list[LineItemFinding], billed_amount: float
+) -> Reason | None:
+    """
+    Collapse the individual line-item findings into a single, user-facing
+    aggregate reason so the headline reflects the total likely-removable
+    overcharge. The individual findings still travel to the letter separately
+    (one numbered argument each) via SynthesisResult.line_item_findings -- this
+    aggregate is only for the headline math and the capped user-facing summary.
+    """
+    if not findings:
+        return None
+    total = total_estimated_overcharge(findings)
+    n = len(findings)
+    # Plain-language label for the kinds we found.
+    kinds = {f.kind for f in findings}
+    label_map = {
+        "duplicate": "duplicate charges",
+        "ncci_ptp": "services billed separately that should be bundled",
+        "mue": "quantities above the allowed daily maximum",
+    }
+    labels = [label_map.get(k, "billing errors") for k in kinds if k in label_map]
+    detail = ", ".join(labels) if labels else "billing errors"
+    if total > 0:
+        summary = (
+            f"We found {n} likely billing error{'s' if n != 1 else ''} on your bill "
+            f"({detail}) worth about ${total:,.0f}. These are the strongest points "
+            f"because they're specific, factual coding issues a billing department "
+            f"has to correct -- not judgment calls."
+        )
+        low = max(round(billed_amount - total, 2), 0.0)
+    else:
+        summary = (
+            f"We found {n} likely billing error{'s' if n != 1 else ''} on your bill "
+            f"({detail}). Each one is a specific, factual coding issue the provider "
+            f"should review and correct."
+        )
+        low = None
+    return Reason(
+        outcome_type=OutcomeType.BILLING_ERROR,
+        summary=summary,
+        estimated_low=low,
+        estimated_high=billed_amount if total > 0 else None,
+        source_requirement_codes=[],
+        basis="billing_error",
+    )
+
+
+def synthesize(
+    input_data: SynthesisInput,
+    line_item_findings: list[LineItemFinding] | None = None,
+) -> SynthesisResult:
+    findings = line_item_findings or []
     follow_ups = determine_follow_ups(input_data)
 
     eligibility_reason = None
@@ -465,21 +554,24 @@ def synthesize(input_data: SynthesisInput) -> SynthesisResult:
     other_reasons = findings_to_reasons(input_data.compliance_findings, input_data.pricing)
     eob_reason = _eob_allowed_amount_reason(input_data)
     mrf_reason = _mrf_rates_reason(input_data)
+    billing_error_reason = _billing_error_reason(findings, input_data.billed_amount)
     all_reasons = (
-        ([eligibility_reason] if eligibility_reason else [])
+        ([billing_error_reason] if billing_error_reason else [])
+        + ([eligibility_reason] if eligibility_reason else [])
         + ([mrf_reason] if mrf_reason else [])      # MRF before EOB -- hospital's own rates
         + ([eob_reason] if eob_reason else [])
         + other_reasons
     )
 
-    # Rank: full elimination > partial reduction (by estimated_high desc)
-    # > procedural leverage. Starting heuristic -- revisit once real
-    # discount_value distributions are available.
+    # Rank: full elimination > billing error (specific & undeniable) > partial
+    # reduction (by estimated_high desc) > procedural leverage. Starting
+    # heuristic -- revisit once real discount_value distributions are available.
     def rank_key(reason: Reason) -> tuple:
         order = {
             OutcomeType.FULL_ELIMINATION: 0,
-            OutcomeType.PARTIAL_REDUCTION: 1,
-            OutcomeType.PROCEDURAL_LEVERAGE: 2,
+            OutcomeType.BILLING_ERROR: 1,
+            OutcomeType.PARTIAL_REDUCTION: 2,
+            OutcomeType.PROCEDURAL_LEVERAGE: 3,
         }
         impact = -(reason.estimated_high or 0)
         return (order[reason.outcome_type], impact)
@@ -503,4 +595,5 @@ def synthesize(input_data: SynthesisInput) -> SynthesisResult:
         reasons=all_reasons[:3],  # cap at 3 per UX design
         follow_up_questions=follow_ups,
         beta_caveat=DEFAULT_BETA_CAVEAT,
+        line_item_findings=findings,
     )

@@ -87,14 +87,19 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 import case_pipeline
+import case_strategy
 import db
 import delivery_pipeline
+import learning
 import legal_leverage
+import line_item_audit
+import phone_script
 import letter_pipeline
 import llm_client
 import outcome_pipeline
 import pricing_pipeline
 import repository
+import state_leverage
 import storage
 import synthesis
 from pricing_pipeline import BenchmarkSource, RateTable
@@ -163,6 +168,11 @@ ROBIN_CHAT_SYSTEM = (
     "and explain how to find out.\n"
     "- If a precise answer needs the actual bill and one hasn't been shared, "
     "encourage the user to upload it.\n"
+    "- When case context is provided (the analysis, the specific line-item "
+    "issues found, the recommended next steps, the negotiation status), USE it: "
+    "refer to the actual findings and the concrete next step rather than "
+    "answering generically. Do not contradict it or invent findings beyond what "
+    "it lists.\n"
     "- Pricing: the user never pays more than $50/month, or 20% of what "
     "RobinHealth saves them (capped at $1,000) -- whichever they prefer. "
     "Pay-per-win charges nothing if nothing is saved; the $50/month membership "
@@ -212,6 +222,85 @@ def _build_chat_prompt(message: str, context_json: Optional[str]) -> str:
         + "\n".join(lines)
         + f"\n\nPatient's question: {message}"
     )
+
+
+def _case_context_text(case_id: str) -> str:
+    """
+    Build an AUTHORITATIVE, server-side context block for a case so Robin can
+    speak to the specific bill: the analysis (headline + reasons), the exact
+    line-item errors found, the recommended strategy and next steps, and the
+    current negotiation status. Returns "" if the case has nothing useful yet.
+
+    This is the "tighter chat <-> case coupling": instead of relying on whatever
+    the front-end chose to put in context_json, the chat reads the real persisted
+    case state, so answers can reference findings and the plan precisely.
+    """
+    try:
+        synth = repository.fetch_case_synthesis(case_id) or {}
+        bill = repository.fetch_bill_for_case(case_id) or {}
+        negotiation = outcome_pipeline.fetch_negotiation_for_case(case_id)
+    except Exception:  # noqa: BLE001 -- chat must never hard-fail on context
+        return ""
+
+    lines: list[str] = []
+    if bill.get("provider_name_raw"):
+        lines.append(f"- Provider: {bill['provider_name_raw']}")
+    if bill.get("total_billed_amount") is not None:
+        lines.append(f"- Total billed: ${bill['total_billed_amount']:,.2f}")
+
+    if synth.get("headline_could_eliminate"):
+        lines.append("- Robin's estimate: this bill could potentially be eliminated entirely.")
+    elif synth.get("headline_high") is not None:
+        low = synth.get("headline_low")
+        high = synth.get("headline_high")
+        if low is not None:
+            lines.append(f"- Robin's estimate: the balance could come down to roughly ${low:,.0f} (from ${high:,.0f}).")
+
+    for r in (synth.get("reasons") or [])[:3]:
+        if isinstance(r, dict) and r.get("summary"):
+            lines.append(f"- Finding: {r['summary']}")
+
+    findings = synth.get("line_item_findings") or []
+    if findings:
+        lines.append(f"- Specific line-item issues found ({len(findings)}):")
+        for f in findings[:5]:
+            if isinstance(f, dict) and f.get("patient_summary"):
+                lines.append(f"   * {f['patient_summary']}")
+
+    # Strategy / next steps.
+    try:
+        facts = _assemble_triage_facts(case_id)
+        strategy = case_strategy.build_strategy(
+            facts, has_dollar_findings=bool(findings),
+        )
+        lines.append(f"- Recommended approach: {strategy.headline}")
+        step_titles = [s.title for s in strategy.steps][:4]
+        if step_titles:
+            lines.append("- Next steps: " + "; ".join(step_titles) + ".")
+    except Exception:  # noqa: BLE001
+        pass
+
+    if negotiation is not None:
+        status = getattr(negotiation, "status", None)
+        if status:
+            lines.append(f"- Negotiation status: {status}.")
+
+    # Learning loop: what Robin has actually seen happen at this facility.
+    try:
+        fid = repository.fetch_facility_id_for_case(case_id)
+        if fid:
+            insights = learning.summarize_outcomes([
+                learning.OutcomeRecord(**r) for r in repository.fetch_facility_outcomes(fid)
+            ])
+            txt = learning.insight_text(insights, bill.get("provider_name_raw"))
+            if txt:
+                lines.append(f"- What Robin has seen at this provider: {txt}")
+    except Exception:  # noqa: BLE001
+        pass
+
+    if not lines:
+        return ""
+    return "Here is what Robin already knows about this patient's bill:\n" + "\n".join(lines)
 
 
 # ============================================================
@@ -489,14 +578,21 @@ async def chat(
     request: Request,
     message: str = Form(...),
     context_json: Optional[str] = Form(None),
+    case_id: Optional[str] = Form(None),
 ) -> JSONResponse:
     """
     Free-form patient Q&A, answered by the configured LLM (Claude by default).
 
     This replaces the front-end's old keyword/if-else canned replies: real
     answers about the user's bill, insurance, rights, and financial-assistance
-    options. Optional context_json (a small JSON summary of the user's current
-    case from the /intake response) lets Robin answer about *their* bill.
+    options.
+
+    Context comes from two places (both optional):
+      - case_id: the AUTHORITATIVE server-side case state -- Robin reads the
+        persisted analysis, the specific line-item errors found, the recommended
+        strategy/next steps, and the negotiation status, so it can answer about
+        *this* bill concretely (the tighter chat <-> case coupling).
+      - context_json: a compact summary the front-end may also pass.
 
     Returns {"reply": "..."}. On LLM error, returns a graceful fallback message
     with HTTP 200 so the chat UI never shows a hard error to a patient.
@@ -511,6 +607,10 @@ async def chat(
         cleaned = cleaned[:4000]
 
     prompt = _build_chat_prompt(cleaned, context_json)
+    if case_id:
+        case_ctx = _case_context_text(case_id)
+        if case_ctx:
+            prompt = f"{case_ctx}\n\n{prompt}"
     try:
         reply = llm_client.complete(
             prompt, system=ROBIN_CHAT_SYSTEM, max_tokens=700,
@@ -802,6 +902,192 @@ async def get_case_full(request: Request, case_id: str) -> JSONResponse:
     }))
 
 
+def _triage_norm_bool(v: Optional[str]) -> Optional[bool]:
+    """Normalize a yes/no-ish form value to a bool, or None if unset/unsure."""
+    if v is None:
+        return None
+    s = v.strip().lower()
+    if s in ("yes", "true", "1", "y", "denied"):
+        return True
+    if s in ("no", "false", "0", "n", "balance", "paid"):
+        return False
+    return None  # "not sure", "" etc. -> leave unknown
+
+
+def _triage_norm_coverage(v: Optional[str]) -> Optional[str]:
+    if v is None:
+        return None
+    s = v.strip().lower()
+    if not s:
+        return None
+    if "self" in s or "own" in s or "uninsured" in s or s == "self_pay":
+        return "self_pay"
+    if "insur" in s or s == "insured":
+        return "insured"
+    return None
+
+
+def _assemble_triage_facts(case_id: str) -> "case_strategy.TriageFacts":
+    """
+    Build TriageFacts from the patient's saved answers (triage_json) plus signals
+    we can derive from the analysis: whether the bill already has itemized line
+    items, and whether the synthesis suggests charity-care eligibility. Patient
+    answers take precedence over derived defaults.
+    """
+    triage = repository.fetch_case_triage(case_id) or {}
+    synth = repository.fetch_case_synthesis(case_id) or {}
+    bill = repository.fetch_bill_for_case(case_id) or {}
+
+    line_items = bill.get("line_items") or []
+    has_line_items = any((li or {}).get("procedure_code") for li in line_items)
+
+    # Charity signal: a full-elimination headline (or an eligibility reason) is a
+    # strong "likely eligible" indicator; otherwise leave unknown.
+    likely_charity = True if synth.get("headline_could_eliminate") else None
+
+    facts = case_strategy.TriageFacts(
+        coverage=_triage_norm_coverage(triage.get("coverage")),
+        emergency=triage.get("emergency"),
+        out_of_network=triage.get("out_of_network"),
+        claim_denied=triage.get("claim_denied"),
+        received_itemized=triage.get("received_itemized"),
+        good_faith_estimate=triage.get("good_faith_estimate"),
+        nonprofit=triage.get("nonprofit"),
+        is_hospital=triage.get("is_hospital"),
+        in_collections=triage.get("in_collections"),
+        has_line_items=has_line_items,  # whether WE have auditable codes to work from
+        likely_charity_eligible=triage.get("likely_charity_eligible", likely_charity),
+    )
+    return facts
+
+
+def _strategy_payload(case_id: str) -> dict:
+    facts = _assemble_triage_facts(case_id)
+    has_dollar_findings = bool(
+        (repository.fetch_case_synthesis(case_id) or {}).get("line_item_findings")
+    )
+    strategy = case_strategy.build_strategy(facts, has_dollar_findings=has_dollar_findings)
+    return {"case_id": case_id, "facts": facts, "strategy": strategy}
+
+
+@app.get("/cases/{case_id}/strategy")
+async def get_case_strategy(request: Request, case_id: str) -> JSONResponse:
+    """
+    Return the case-strategy plan: the classified archetype, an ordered playbook
+    of concrete next steps, and the short list of triage questions still worth
+    asking. Derived from the patient's saved triage answers + the analysis.
+    """
+    _check_auth(request)
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM cases WHERE id = %s", (case_id,))
+            if cur.fetchone() is None:
+                raise HTTPException(status_code=404, detail=f"Case {case_id!r} not found")
+    return JSONResponse(content=jsonable_encoder(_strategy_payload(case_id)))
+
+
+@app.get("/cases/{case_id}/phone-script")
+async def get_case_phone_script(request: Request, case_id: str) -> JSONResponse:
+    """
+    Return a tailored phone-call script for this case: what to say, the specific
+    line-item errors to raise, what to get in writing, what not to agree to, and
+    how to escalate. Most bills are resolved on the phone -- this hands the
+    patient the words to use.
+    """
+    _check_auth(request)
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM cases WHERE id = %s", (case_id,))
+            if cur.fetchone() is None:
+                raise HTTPException(status_code=404, detail=f"Case {case_id!r} not found")
+
+    facts = _assemble_triage_facts(case_id)
+    archetype = case_strategy.classify_archetype(facts)
+    synth = repository.fetch_case_synthesis(case_id) or {}
+    findings = [
+        line_item_audit.finding_from_dict(f)
+        for f in (synth.get("line_item_findings") or [])
+    ]
+    bill = repository.fetch_bill_for_case(case_id) or {}
+    script = phone_script.build_phone_script(
+        archetype,
+        facility_name=bill.get("provider_name_raw"),
+        account_number=bill.get("account_number"),
+        findings=findings,
+    )
+    return JSONResponse(content=jsonable_encoder({"case_id": case_id, "phone_script": script}))
+
+
+@app.get("/facilities/{facility_id}/insights")
+async def get_facility_insights(request: Request, facility_id: str) -> JSONResponse:
+    """
+    The learning loop, exposed: aggregate outcome statistics across resolved
+    cases at this facility (how often pushing back produced a reduction, the
+    typical reduction size, and how long it took). Includes a plain-language
+    summary only when there's enough history to be meaningful.
+    """
+    _check_auth(request)
+    records = [
+        learning.OutcomeRecord(**r) for r in repository.fetch_facility_outcomes(facility_id)
+    ]
+    insights = learning.summarize_outcomes(records)
+    return JSONResponse(content=jsonable_encoder({
+        "facility_id": facility_id,
+        "insights": insights,
+        "summary": learning.insight_text(insights),
+    }))
+
+
+@app.post("/cases/{case_id}/triage")
+@limiter.limit(f"{_RATE_LIMIT_PER_MINUTE}/minute")
+async def save_case_triage(
+    request: Request,
+    case_id: str,
+    coverage: Optional[str] = Form(None),         # "insured" | "self_pay"
+    emergency: Optional[str] = Form(None),         # yes/no
+    out_of_network: Optional[str] = Form(None),    # yes/no
+    claim_denied: Optional[str] = Form(None),      # "denied" -> True, "balance" -> False
+    received_itemized: Optional[str] = Form(None), # yes/no
+    good_faith_estimate: Optional[str] = Form(None),
+    nonprofit: Optional[str] = Form(None),
+    in_collections: Optional[str] = Form(None),
+) -> JSONResponse:
+    """
+    Save the patient's answers to triage questions (merged into any prior
+    answers) and return the updated strategy. Only fields that are provided and
+    resolvable are stored -- "not sure" answers are left unknown so the question
+    can be revisited rather than answered wrongly.
+    """
+    _check_auth(request)
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM cases WHERE id = %s", (case_id,))
+            if cur.fetchone() is None:
+                raise HTTPException(status_code=404, detail=f"Case {case_id!r} not found")
+
+    updates: dict = {}
+    cov = _triage_norm_coverage(coverage)
+    if cov is not None:
+        updates["coverage"] = cov
+    for field_name, raw in (
+        ("emergency", emergency),
+        ("out_of_network", out_of_network),
+        ("claim_denied", claim_denied),
+        ("received_itemized", received_itemized),
+        ("good_faith_estimate", good_faith_estimate),
+        ("nonprofit", nonprofit),
+        ("in_collections", in_collections),
+    ):
+        val = _triage_norm_bool(raw)
+        if val is not None:
+            updates[field_name] = val
+
+    if updates:
+        repository.persist_case_triage(case_id, updates)
+
+    return JSONResponse(content=jsonable_encoder(_strategy_payload(case_id)))
+
+
 @app.post("/cases/{case_id}/response")
 @limiter.limit(f"{_RATE_LIMIT_PER_MINUTE}/minute")
 async def handle_provider_response(
@@ -984,6 +1270,21 @@ async def draft_letter(
                 received_itemized=_yn(received_itemized),
                 self_pay=_yn(self_pay),
                 good_faith_estimate=_yn(good_faith_estimate),
+            )
+            # Layer in STATE-law leverage too (charity-care/fair-pricing statutes,
+            # medical-debt credit-reporting bans) -- often stronger than the
+            # federal arguments. State is derived from the bill/facility address;
+            # absent a recognizable state, this simply contributes nothing.
+            triage = repository.fetch_case_triage(case_id) or {}
+            patient_state = state_leverage.extract_state_from_address(facility_address) or (
+                state_leverage.extract_state_from_address(
+                    (repository.fetch_bill_for_case(case_id) or {}).get("provider_address_raw")
+                )
+            )
+            leverage = list(leverage) + state_leverage.build_state_leverage(
+                patient_state,
+                self_pay=_yn(self_pay),
+                in_collections=triage.get("in_collections"),
             )
             for la in leverage:
                 context.arguments.append(letter_pipeline.LetterArgument(

@@ -351,3 +351,9 @@ ALTER TABLE patients
 -- in-memory at intake and never stored. Serialized SynthesisResult as JSONB.
 ALTER TABLE cases
     ADD COLUMN IF NOT EXISTS synthesis_json JSONB;
+
+-- Triage facts gathered from the patient (coverage, emergency, surprise-OON,
+-- itemized status, etc.) that drive the case-strategy router (case_strategy.py).
+-- Additive JSONB; absent for cases created before triage existed.
+ALTER TABLE cases
+    ADD COLUMN IF NOT EXISTS triage_json JSONB;

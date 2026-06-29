@@ -31,6 +31,7 @@ from dataclasses import dataclass
 
 import llm_client
 from compliance_checklist import CHECKLIST_BY_CODE
+from line_item_audit import LineItemFinding, total_estimated_overcharge
 from synthesis import OutcomeType, Reason, SynthesisResult
 
 # How long the provider is given to respond before RobinHealth follows up
@@ -124,23 +125,92 @@ def _argument_for_reason(reason: Reason) -> LetterArgument:
             source_requirement_codes=[],
         )
 
-    # PARTIAL_REDUCTION
-    text = (
-        f"Based on the facility's published Financial Assistance Policy "
-        f"and the patient's household income relative to the Federal "
-        f"Poverty Level, this account appears eligible for a reduced "
-        f"balance of approximately ${reason.estimated_low:,.2f}, rather "
-        f"than the billed ${reason.estimated_high:,.2f}."
-        if reason.estimated_low is not None and reason.estimated_high is not None
-        else (
-            "This charge appears substantially above comparable rates "
-            "for the same service."
+    if reason.outcome_type == OutcomeType.BILLING_ERROR:
+        # Normally the letter itemizes line-item findings directly (see
+        # _argument_from_finding); this branch only fires if a BILLING_ERROR
+        # reason reaches the letter without its findings attached -- use its
+        # own already-provider-appropriate summary.
+        return LetterArgument(
+            outcome_type=reason.outcome_type,
+            text=reason.summary,
+            requested_amount=reason.estimated_low,
+            source_requirement_codes=[],
         )
-    )
+
+    # PARTIAL_REDUCTION -- the provider-facing wording depends on what the
+    # reduction is *grounded in* (reason.basis), so a pricing/MRF/EOB reduction
+    # is never mis-attributed to financial assistance/income. For MRF/EOB the
+    # dollar fields hold *savings* (not a target balance), so those branches
+    # assert the source without printing a figure that would be mislabeled.
+    has_amounts = reason.estimated_low is not None and reason.estimated_high is not None
+    if reason.basis == "pricing" and has_amounts:
+        text = (
+            f"Independent reimbursement benchmarks (including Medicare-based "
+            f"fair-price estimates) place a reasonable charge for these services "
+            f"at approximately ${reason.estimated_low:,.2f}, versus the "
+            f"${reason.estimated_high:,.2f} billed. We request the balance be "
+            f"adjusted toward this benchmark."
+        )
+        requested = reason.estimated_low
+    elif reason.basis == "mrf_cash":
+        text = (
+            "The facility's own published self-pay/cash price for these services "
+            "is materially below the amount billed. We request the account be "
+            "adjusted to the facility's published cash rate."
+        )
+        requested = None
+    elif reason.basis == "mrf_negotiated":
+        text = (
+            "The facility's published negotiated rates for these services are "
+            "below the amount billed. We request the balance be adjusted to the "
+            "facility's disclosed negotiated range."
+        )
+        requested = None
+    elif reason.basis == "eob_allowed":
+        text = (
+            "The patient's insurer established a contracted allowed amount for "
+            "these services that is below the amount billed. We request the same "
+            "rate be extended as the self-pay amount, consistent with what the "
+            "provider accepts as payment in full from the payer."
+        )
+        requested = None
+    elif reason.basis == "fap" and has_amounts:
+        text = (
+            f"Based on the facility's published Financial Assistance Policy and "
+            f"the patient's household income relative to the Federal Poverty "
+            f"Level, this account appears eligible for a reduced balance of "
+            f"approximately ${reason.estimated_low:,.2f}, rather than the billed "
+            f"${reason.estimated_high:,.2f}."
+        )
+        requested = reason.estimated_low
+    elif has_amounts:
+        text = (
+            f"This account appears eligible for a reduced balance of "
+            f"approximately ${reason.estimated_low:,.2f}, rather than the billed "
+            f"${reason.estimated_high:,.2f}."
+        )
+        requested = reason.estimated_low
+    else:
+        text = (
+            "This charge appears substantially above comparable rates for the "
+            "same service."
+        )
+        requested = reason.estimated_low
     return LetterArgument(
         outcome_type=reason.outcome_type,
         text=text,
-        requested_amount=reason.estimated_low,
+        requested_amount=requested,
+        source_requirement_codes=[],
+    )
+
+
+def _argument_from_finding(finding: LineItemFinding) -> LetterArgument:
+    """Turn one line-item audit finding into a provider-facing letter argument."""
+    return LetterArgument(
+        outcome_type=OutcomeType.BILLING_ERROR,
+        text=finding.provider_text,
+        requested_amount=None,  # dollar impact is in the text; the bottom-line
+                                # ask folds total overcharge in separately
         source_requirement_codes=[],
     )
 
@@ -162,14 +232,29 @@ def assemble_context(
     requests a response/review without a specific number -- the procedural
     arguments are the entire ask in that case.
     """
-    arguments = [_argument_for_reason(r) for r in synthesis_result.reasons]
+    # Lead with the specific line-item errors (duplicates, unbundling, excess
+    # units) -- they're the strongest because they're factual and itemized --
+    # then the remaining synthesis reasons. The aggregate BILLING_ERROR reason
+    # is skipped here because the findings below already represent it, itemized.
+    finding_args = [_argument_from_finding(f) for f in synthesis_result.line_item_findings]
+    reason_args = [
+        _argument_for_reason(r) for r in synthesis_result.reasons
+        if r.outcome_type != OutcomeType.BILLING_ERROR
+    ]
+    arguments = finding_args + reason_args
 
     requests_full_waiver = synthesis_result.headline_could_eliminate
     if requests_full_waiver:
         requested_amount = 0.0
     else:
-        # lowest estimated_low across PARTIAL_REDUCTION arguments, if any
+        # lowest target balance across quantified arguments. Billing errors
+        # contribute as (billed - total removable overcharge), so the ask
+        # reflects the corrected bill even though each finding's own text
+        # carries the per-line dollar figure.
         amounts = [a.requested_amount for a in arguments if a.requested_amount is not None]
+        total_oc = total_estimated_overcharge(synthesis_result.line_item_findings)
+        if total_oc > 0:
+            amounts.append(round(billed_amount - total_oc, 2))
         requested_amount = min(amounts) if amounts else None
 
     return LetterContext(
@@ -212,7 +297,12 @@ patient's available options, not as a threat.
 - NOT include a signature block, letterhead, or date -- those are added by \
 the calling system. Begin directly with the salutation.
 
-Keep it to a tight single page, and lead with the strongest arguments.
+Keep it to a tight single page. Lead with the strongest arguments -- and the \
+strongest are the specific, line-item billing/coding errors (duplicate charges, \
+unbundled codes, units above the allowed daily maximum) where they appear, \
+because they are concrete and factual rather than a matter of opinion. Put \
+those first, then the broader pricing, financial-assistance, and statutory \
+arguments.
 
 RECIPIENT:
 Facility: {facility_name}
