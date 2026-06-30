@@ -60,6 +60,17 @@ Build from the repo root `Dockerfile`. Required environment variables:
 | `S3_SSE` | server-side encryption: `AES256` (default) or `aws:kms` |
 | `S3_SSE_KMS_KEY_ID` | KMS key id/arn, when `S3_SSE=aws:kms` |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | S3 credentials (or use an instance/role) |
+| `STRIPE_SECRET_KEY` | `sk_live_…` / `sk_test_…` — enables payments (unset = payments off) |
+| `STRIPE_WEBHOOK_SECRET` | `whsec_…` — verifies the `/webhooks/stripe` receiver |
+| `STRIPE_MEMBERSHIP_PRICE_ID` | `price_…` for the $50/mo recurring price |
+| `STRIPE_SUCCESS_URL` / `STRIPE_CANCEL_URL` | where Stripe Checkout returns |
+
+For payments: create a $50/mo recurring Price in Stripe (set `STRIPE_MEMBERSHIP_PRICE_ID`),
+add a webhook endpoint pointing at `https://<api-host>/webhooks/stripe`
+(events: `checkout.session.completed`, `customer.subscription.updated`,
+`customer.subscription.deleted`, `invoice.payment_failed`) and set its signing
+secret as `STRIPE_WEBHOOK_SECRET`. Card data is handled entirely by Stripe-hosted
+Checkout (no PCI scope for us).
 
 For `s3`: create a **private** bucket (block all public access), enable
 default encryption, scope an IAM user/policy to just that bucket, and

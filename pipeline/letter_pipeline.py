@@ -272,15 +272,20 @@ def assemble_context(
 # ============================================================
 
 LETTER_PROMPT = """\
-You are drafting a formal medical-bill dispute/negotiation letter on behalf \
-of a patient, sent by RobinHealth (a billing-advocacy service acting as the \
-patient's authorized representative) to a healthcare provider's billing \
-department. The goal is a letter that is professional and respectful but \
-firm and well-supported -- one a billing department must take seriously.
+You are drafting a medical-bill dispute/negotiation letter that THE PATIENT \
+will send themselves, written entirely in the patient's own first-person voice \
+("I am writing about my account..."). The patient prepared this letter with the \
+help of RobinHealth, a tool that helps people understand and dispute medical \
+bills -- but the letter is FROM the patient, not from any representative or \
+service. The goal is a letter that is professional and respectful but firm and \
+well-supported -- one a billing department must take seriously.
 
 The letter MUST:
-- Open by identifying RobinHealth as the patient's authorized representative \
-and the account it concerns (use the recipient details).
+- Be written in the first person from the patient's point of view ("I", "my \
+account"). NEVER say it is sent by, or on behalf of, a representative, advocate, \
+or service, and never claim anyone is authorized to act for the patient.
+- Open by identifying the patient and the account it concerns (use the \
+recipient details).
 - Present EACH argument below as its own clearly stated, numbered point. \
 Preserve the specific legal citations and dollar figures exactly as given -- \
 do not soften them, drop them, or invent any new citations or numbers.
@@ -290,10 +295,10 @@ threat or an accusation.
 - Request a written, itemized response within the deadline, and ask that \
 collection activity be paused while the account is under review.
 - Include one brief, matter-of-fact sentence noting that if the account is \
-not resolved the patient may seek review by the appropriate oversight bodies \
-(for example, the state attorney general's office, the state insurance \
-regulator, or CMS / the federal No Surprises Help Desk) -- stated as the \
-patient's available options, not as a threat.
+not resolved I may seek review by the appropriate oversight bodies (for \
+example, the state attorney general's office, the state insurance regulator, \
+or CMS / the federal No Surprises Help Desk) -- stated as my available options, \
+not as a threat.
 - NOT include a signature block, letterhead, or date -- those are added by \
 the calling system. Begin directly with the salutation.
 
@@ -477,10 +482,10 @@ def render_to_pdf(
     s = _build_styles()
     story = []
 
-    # ---- Letterhead ----
+    # ---- Letterhead (the patient is the sender) ----
     lh_data = [[
-        Paragraph("RobinHealth", s["letterhead_name"]),
-        Paragraph("Your AI-enabled health advocate", s["letterhead_tagline"]),
+        Paragraph(recipient.patient_name, s["letterhead_name"]),
+        Paragraph("Prepared with RobinHealth", s["letterhead_tagline"]),
     ]]
     lh_table = Table(lh_data, colWidths=[3.5 * inch, 3.5 * inch])
     lh_table.setStyle(TableStyle([
@@ -563,13 +568,12 @@ def render_to_pdf(
     story.append(res_box)
     story.append(Spacer(1, 0.25 * inch))
 
-    # ---- Signature block ----
+    # ---- Signature block (the patient is the sender) ----
     story.append(Paragraph("Sincerely,", s["body"]))
     story.append(Spacer(1, 0.35 * inch))
     story.append(Paragraph(
-        f"<b>{sender_name}</b><br/>"
-        f"Authorized Representative for {recipient.patient_name}<br/>"
-        f"{sender_email} | {sender_phone}",
+        f"<b>{recipient.patient_name}</b><br/>"
+        f"[Your phone number]&nbsp;&nbsp;|&nbsp;&nbsp;[Your email address]",
         s["body"],
     ))
 
@@ -578,10 +582,10 @@ def render_to_pdf(
     story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#DDDDDD")))
     story.append(Spacer(1, 0.08 * inch))
     story.append(Paragraph(
-        "RobinHealth is an AI-enabled patient advocacy service. This letter was prepared on behalf of "
-        f"the patient named above under their written authorization (Reference: {reference_number}). "
-        "RobinHealth is not a law firm and this letter does not constitute legal advice. "
-        "If this account is in active legal proceedings, please contact the patient's legal representative.",
+        "This letter was prepared by the patient named above using RobinHealth, an AI tool that helps "
+        f"patients understand and dispute their own medical bills, and is being sent by the patient "
+        f"(Reference: {reference_number}). RobinHealth is not a law firm and this letter does not "
+        "constitute legal advice.",
         s["disclaimer"],
     ))
 
@@ -616,10 +620,10 @@ def render_followup_letter(
     s = _build_styles()
     story = []
 
-    # Letterhead (same as initial letter)
+    # Letterhead (the patient is the sender; same style as initial letter)
     lh_data = [[
-        Paragraph("RobinHealth", s["letterhead_name"]),
-        Paragraph("Your AI-enabled health advocate", s["letterhead_tagline"]),
+        Paragraph(recipient.patient_name, s["letterhead_name"]),
+        Paragraph("Prepared with RobinHealth", s["letterhead_tagline"]),
     ]]
     lh_table = Table(lh_data, colWidths=[3.5 * inch, 3.5 * inch])
     lh_table.setStyle(TableStyle([
@@ -714,9 +718,8 @@ def render_followup_letter(
     story.append(Paragraph("Sincerely,", s["body"]))
     story.append(Spacer(1, 0.35 * inch))
     story.append(Paragraph(
-        f"<b>RobinHealth Patient Advocacy</b><br/>"
-        f"Authorized Representative for {recipient.patient_name}<br/>"
-        "advocacy@robinhealth.com | (888) ROB-INHL",
+        f"<b>{recipient.patient_name}</b><br/>"
+        f"[Your phone number]&nbsp;&nbsp;|&nbsp;&nbsp;[Your email address]",
         s["body"],
     ))
 
@@ -724,8 +727,8 @@ def render_followup_letter(
     story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#DDDDDD")))
     story.append(Spacer(1, 0.08 * inch))
     story.append(Paragraph(
-        "RobinHealth is an AI-enabled patient advocacy service acting under patient authorization. "
-        "Reference: " + reference_number,
+        "Prepared by the patient using RobinHealth, an AI tool that helps patients dispute their own "
+        "medical bills, and sent by the patient. Reference: " + reference_number,
         s["disclaimer"],
     ))
 
@@ -776,8 +779,8 @@ def render_insurer_appeal_letter(
 
     # Letterhead
     lh_data = [[
-        Paragraph("RobinHealth", s["letterhead_name"]),
-        Paragraph("Your AI-enabled health advocate", s["letterhead_tagline"]),
+        Paragraph(patient_name, s["letterhead_name"]),
+        Paragraph("Prepared with RobinHealth", s["letterhead_tagline"]),
     ]]
     lh_table = Table(lh_data, colWidths=[3.5 * inch, 3.5 * inch])
     lh_table.setStyle(TableStyle([
@@ -822,16 +825,15 @@ def render_insurer_appeal_letter(
         re_parts.append(f"Date of Service: {date_of_service}")
     story.append(Paragraph(" | ".join(re_parts), s["subject"]))
 
-    # Body
+    # Body (first-person: the member is appealing their own claim)
     story.append(Paragraph("Dear Appeals Department:", s["body"]))
     opening = (
-        f"RobinHealth is writing as the authorized representative of {patient_name} to "
-        f"formally appeal the determination on the claim referenced above"
+        "I am writing to formally appeal the determination on the claim referenced above"
     )
     opening += f", for which the stated reason was: {denial_reason}." if denial_reason else "."
     story.append(Paragraph(opening, s["body"]))
     story.append(Paragraph(
-        "We respectfully request that you reconsider and reprocess this claim in accordance "
+        "I respectfully request that you reconsider and reprocess this claim in accordance "
         "with the member's plan benefits, and issue a corrected Explanation of Benefits "
         "reflecting the correct allowed amount, plan payment, and member responsibility.",
         s["body"],
@@ -865,8 +867,8 @@ def render_insurer_appeal_letter(
     story.append(Spacer(1, 0.15 * inch))
     story.append(Paragraph(
         f"Please provide a written determination of this appeal within "
-        f"<b>{response_deadline_days} days</b>. RobinHealth is the member's authorized "
-        f"representative for this appeal; please direct correspondence accordingly.",
+        f"<b>{response_deadline_days} days</b>, and direct correspondence to me at the "
+        f"contact information below.",
         s["body"],
     ))
 
@@ -874,9 +876,8 @@ def render_insurer_appeal_letter(
     story.append(Paragraph("Sincerely,", s["body"]))
     story.append(Spacer(1, 0.35 * inch))
     story.append(Paragraph(
-        f"<b>{sender_name}</b><br/>"
-        f"Authorized Representative for {patient_name}<br/>"
-        f"{sender_email} | {sender_phone}",
+        f"<b>{patient_name}</b><br/>"
+        f"[Your phone number]&nbsp;&nbsp;|&nbsp;&nbsp;[Your email address]",
         s["body"],
     ))
 
@@ -884,9 +885,9 @@ def render_insurer_appeal_letter(
     story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#DDDDDD")))
     story.append(Spacer(1, 0.08 * inch))
     story.append(Paragraph(
-        "RobinHealth is an AI-enabled patient advocacy service acting under patient "
-        "authorization, and is not a law firm. This letter does not constitute legal advice. "
-        "Reference: " + reference_number,
+        "Prepared by the member using RobinHealth, an AI tool that helps patients dispute their own "
+        "medical bills, and sent by the member. RobinHealth is not a law firm and this letter does "
+        "not constitute legal advice. Reference: " + reference_number,
         s["disclaimer"],
     ))
 

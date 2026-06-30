@@ -93,6 +93,7 @@ import delivery_pipeline
 import learning
 import legal_leverage
 import line_item_audit
+import payments
 import phone_script
 import letter_pipeline
 import llm_client
@@ -790,6 +791,89 @@ async def set_plan(
     })
 
 
+# ============================================================
+# Payments (Stripe)
+# ============================================================
+
+@app.post("/patients/{patient_id}/membership-checkout")
+@limiter.limit(f"{_RATE_LIMIT_PER_MINUTE}/minute")
+async def membership_checkout(
+    request: Request,
+    patient_id: str,
+    email: Optional[str] = Form(None),
+) -> JSONResponse:
+    """
+    Start the $50/month membership subscription. Returns a Stripe-hosted Checkout
+    URL to redirect the patient to. The subscription becomes active only when the
+    Stripe webhook confirms it.
+    """
+    _check_auth(request)
+    try:
+        result = payments.create_membership_checkout(patient_id, email=email)
+    except payments.PaymentsNotConfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return JSONResponse(content={"patient_id": patient_id, **result})
+
+
+@app.post("/cases/{case_id}/contingency-checkout")
+@limiter.limit(f"{_RATE_LIMIT_PER_MINUTE}/minute")
+async def contingency_checkout(
+    request: Request,
+    case_id: str,
+    email: Optional[str] = Form(None),
+) -> JSONResponse:
+    """
+    Start the one-time contingency-fee charge for a case. The fee is computed
+    server-side (20% of the documented savings, capped) from the case's recorded
+    outcome -- never trusted from the client. 409 if there's no documented
+    reduction yet; 200 with charge=false on Membership (which takes 0% of
+    savings). The charge is confirmed only by the Stripe webhook.
+    """
+    _check_auth(request)
+    patient_id = repository.fetch_patient_id_for_case(case_id)
+    if patient_id is None:
+        raise HTTPException(status_code=404, detail=f"Case {case_id!r} not found")
+
+    neg = outcome_pipeline.fetch_negotiation_for_case(case_id)
+    if neg is None or neg.agreed_amount is None:
+        raise HTTPException(
+            status_code=409,
+            detail="No documented reduction yet -- record the agreed outcome first.",
+        )
+    amount_saved = max((neg.original_billed_amount or 0) - (neg.agreed_amount or 0), 0)
+    plan = neg.plan or outcome_pipeline.get_patient_plan(patient_id)
+    fee = outcome_pipeline.compute_robinhealth_fee(amount_saved, plan)
+    if fee <= 0:
+        return JSONResponse(content={
+            "case_id": case_id, "charge": False,
+            "message": "No contingency fee is due (Membership takes 0% of your savings).",
+        })
+    try:
+        result = payments.create_contingency_checkout(patient_id, case_id, fee, email=email)
+    except payments.PaymentsNotConfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return JSONResponse(content={"case_id": case_id, "charge": True, "fee_usd": fee, **result})
+
+
+@app.post("/webhooks/stripe")
+async def stripe_webhook(request: Request) -> JSONResponse:
+    """
+    Stripe webhook receiver -- the source of truth for payments actually
+    completing. Verifies the signature (STRIPE_WEBHOOK_SECRET) and updates
+    membership/payment status. No auth header (Stripe calls it); the signature
+    is the authentication.
+    """
+    payload = await request.body()
+    sig = request.headers.get("stripe-signature")
+    try:
+        summary = payments.handle_webhook(payload, sig)
+    except payments.PaymentsNotConfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return JSONResponse(content=summary)
+
+
 @app.post("/cases/{case_id}/negotiate")
 @limiter.limit(f"{_RATE_LIMIT_PER_MINUTE}/minute")
 async def start_negotiation(
@@ -1383,19 +1467,17 @@ async def draft_letter(
                 # Template fallback: professional letter without LLM
                 template_body = (
                     f"Dear Billing Department,\n\n"
-                    f"RobinHealth is writing as the authorized representative for {recipient.patient_name} "
-                    f"regarding account #{recipient.account_number or 'on file'}"
+                    f"I am writing regarding my account #{recipient.account_number or 'on file'}"
                     + (f", date of service {recipient.date_of_service}" if recipient.date_of_service else "")
                     + f".\n\n"
                     f"The billed amount of ${billed_amount:,.2f} appears substantially above Medicare "
                     f"published rates and typical negotiated rates for the services rendered. "
-                    f"We respectfully request a reduction of the account balance to "
+                    f"I respectfully request a reduction of my account balance to "
                     f"${target:,.2f}, which is consistent with standard reimbursement benchmarks "
                     f"for comparable services in this market.\n\n"
-                    f"Our client is committed to resolving this account promptly. "
+                    f"I am committed to resolving this account promptly. "
                     f"Please respond in writing within {context.response_deadline_days} days to confirm "
-                    f"whether this adjustment can be accommodated. "
-                    f"RobinHealth can be reached at advocacy@robinhealth.com.\n\n"
+                    f"whether this adjustment can be accommodated.\n\n"
                     f"Thank you for your consideration."
                 )
                 drafted = letter_pipeline.DraftedLetter(
@@ -1573,9 +1655,9 @@ async def send_letter(
             "subject": f"Medical Bill Negotiation — Reference {reference_number}",
             "body": (
                 "Dear Billing Department,\n\n"
-                "Please find attached a formal negotiation letter from RobinHealth, "
-                f"acting as authorized representative for our patient (Reference: {reference_number}).\n\n"
-                "RobinHealth Patient Advocacy | advocacy@robinhealth.com"
+                "Please find attached a dispute letter regarding my account "
+                f"(Reference: {reference_number}). I would appreciate your written response.\n\n"
+                "Thank you."
             ),
         }
     elif channel == "letter_fax":

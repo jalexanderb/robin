@@ -584,6 +584,89 @@ def delete_case_row(case_id: str) -> bool:
             return cur.rowcount > 0
 
 
+# ============================================================
+# Payments / billing (Stripe)
+# ============================================================
+
+def fetch_stripe_customer_id(patient_id: str) -> str | None:
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT stripe_customer_id FROM patients WHERE id = %s", (patient_id,))
+            row = cur.fetchone()
+    return row[0] if (row and row[0]) else None
+
+
+def set_stripe_customer_id(patient_id: str, customer_id: str) -> None:
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE patients SET stripe_customer_id = %s, updated_at = now() WHERE id = %s",
+                (customer_id, patient_id),
+            )
+
+
+def set_membership_subscription(patient_id: str, subscription_id: str | None, status: str | None) -> None:
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE patients SET membership_subscription_id = %s, membership_status = %s, "
+                "updated_at = now() WHERE id = %s",
+                (subscription_id, status, patient_id),
+            )
+
+
+def set_membership_status_by_customer(customer_id: str, status: str | None) -> None:
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE patients SET membership_status = %s, updated_at = now() "
+                "WHERE stripe_customer_id = %s",
+                (status, customer_id),
+            )
+
+
+def fetch_patient_billing(patient_id: str) -> dict | None:
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT stripe_customer_id, membership_subscription_id, membership_status "
+                "FROM patients WHERE id = %s",
+                (patient_id,),
+            )
+            row = cur.fetchone()
+    if row is None:
+        return None
+    return {
+        "stripe_customer_id": row[0],
+        "membership_subscription_id": row[1],
+        "membership_status": row[2],
+    }
+
+
+def record_payment(
+    patient_id: str | None, case_id: str | None, kind: str, amount_cents: int,
+    stripe_session_id: str | None = None, status: str = "pending",
+) -> str:
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO payments (patient_id, case_id, kind, amount_cents, "
+                "stripe_session_id, status) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                (patient_id, case_id, kind, amount_cents, stripe_session_id, status),
+            )
+            return str(cur.fetchone()[0])
+
+
+def mark_payment_status_by_session(session_id: str, status: str) -> bool:
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE payments SET status = %s, updated_at = now() WHERE stripe_session_id = %s",
+                (status, session_id),
+            )
+            return cur.rowcount > 0
+
+
 def fetch_case_ids_older_than(days: int) -> list[str]:
     """Return case ids whose created_at is older than `days` days ago -- the
     retention sweep's selection step."""
@@ -690,6 +773,15 @@ def fetch_case_triage(case_id: str) -> dict | None:
             cur.execute("SELECT triage_json FROM cases WHERE id = %s", (case_id,))
             row = cur.fetchone()
     return row[0] if (row and row[0] is not None) else None
+
+
+def fetch_patient_id_for_case(case_id: str) -> str | None:
+    """Return the patient who owns a case, or None if the case doesn't exist."""
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT patient_id FROM cases WHERE id = %s", (case_id,))
+            row = cur.fetchone()
+    return str(row[0]) if (row and row[0]) else None
 
 
 def fetch_facility_id_for_case(case_id: str) -> str | None:

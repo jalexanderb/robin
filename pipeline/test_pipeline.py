@@ -2297,15 +2297,19 @@ def test_fee_terms_content_is_complete():
     assert terms["version"] == FEE_TERMS_VERSION
     assert "20%" in FEE_TERMS_TEXT
     assert "nothing" in FEE_TERMS_TEXT.lower()  # no cure no fee
-    assert "authorize" in FEE_TERMS_TEXT.lower() # authorization language
+    # Self-send model (v2.1): the patient sends the materials themselves; we do
+    # NOT act as their agent / contact the provider for them.
+    assert "yourself" in FEE_TERMS_TEXT.lower()
+    assert "on your behalf" not in FEE_TERMS_TEXT.lower()
 
 
 def test_fee_terms_version_reflects_two_plan_model():
-    # Bumped to v2.0 when the $50/month membership ceiling was added alongside
-    # the capped 20% contingency fee. The version bump intentionally forces
-    # existing patients to re-accept the new pricing terms.
+    # v2.0 added the $50/month membership ceiling alongside the capped 20%
+    # contingency fee; v2.1 repositioned the terms to the self-send model (we
+    # prepare the materials; the patient sends them). Each bump intentionally
+    # forces existing patients to re-accept the new terms.
     from outcome_pipeline import get_fee_terms, FEE_TERMS_VERSION, FEE_TERMS_TEXT
-    assert FEE_TERMS_VERSION == "v2.0"
+    assert FEE_TERMS_VERSION == "v2.1"
     terms = get_fee_terms()
     assert terms["membership_monthly_usd"] == 50.0
     assert terms["fee_cap_usd"] == 1000.0

@@ -324,7 +324,7 @@ You'll never pay more than $50/month, or 20% of what we save you. Choose either:
 • Pay-per-win — 20% of the amount we save you, capped at $1,000 per bill. Nothing if we don't save you anything.
 • Membership — a flat $50/month, and we take 0% of your savings. Cancel anytime.
 
-By choosing a plan you authorize RobinHealth to contact your provider (and, where relevant, your insurer) on your behalf about this bill. You can withdraw any time before an agreement is reached, with no fee owed. RobinHealth is in beta — please review everything carefully.`;
+RobinHealth prepares the letters, appeals, and call scripts for you to send and use yourself — we don't contact your provider or insurer for you. You review everything before you send it, and you can withdraw any time before you send, with no fee owed. RobinHealth is in beta — please review everything carefully.`;
 
 const LETTER_TIPS = "A few tips:\n• Send by certified mail or email with a read receipt so you have proof\n• Keep a copy for your records\n• Providers typically respond within 2–4 weeks\n\nFeel free to ask me anything about the letter or what to do next.";
 
@@ -401,9 +401,7 @@ function Chat({ embedded, onHome }) {
   const [pendingLetterKind, setPendingLetterKind] = useState(null); // 'provider' | 'insurer' (which letter we're collecting for)
   const [letterFacts, setLetterFacts] = useState({}); // answers that unlock statutory leverage
   const [factStep, setFactStep] = useState(0);
-  const [lastLetter, setLastLetter] = useState(null);        // { storageKey, reference }
   const [negotiationStarted, setNegotiationStarted] = useState(false);
-  const [pendingChannel, setPendingChannel] = useState(null); // 'letter_email' | 'letter_fax'
   const [lastResponse, setLastResponse] = useState(null);     // last /response result
   // Lazy init: read the saved pointer once on mount. Any saved case can be
   // resumed now that /full restores the bill + analysis, not just negotiations.
@@ -572,13 +570,12 @@ function Chat({ embedded, onHome }) {
         }
         if (!resp.ok) throw new Error(`draft-letter ${resp.status}`);
         const data = await resp.json();
-        setLastLetter({ storageKey: data.storage_key, reference: data.reference_number });
         await robinSay(
-          "Here's your letter — drafted and rendered to a PDF on RobinHealth letterhead. Please review it carefully.",
+          "Here's your letter — written in your name and rendered to a PDF. Please review it carefully, and add your phone/email where it says [bracketed] before you send it.",
           500,
           { letter: { pdfUrl: `${API_BASE}/letters/${data.storage_key}`, reference: data.reference_number } }
         );
-        await robinSay("Want me to send it to your provider for you, or will you send it yourself?", 800);
+        await robinSay("Send it to your provider's billing department yourself — certified mail or email gives you a paper trail. Tap below once you've got it and I'll track the response.", 800);
         setStage("ask_send");
         return;
       } catch (e) {
@@ -669,13 +666,12 @@ function Chat({ embedded, onHome }) {
         const resp = await apiFetch(`${API_BASE}/cases/${caseId}/appeal-letter`, { method: "POST", body: fd });
         if (!resp.ok) throw new Error(`appeal-letter ${resp.status}`);
         const data = await resp.json();
-        setLastLetter({ storageKey: data.storage_key, reference: data.reference_number });
         await robinSay(
-          "Here's your appeal to the insurer — review it and fill in any [bracketed] details like your member ID and claim number (they're on your EOB or insurance card), then I can send it or you can.",
+          "Here's your appeal to the insurer — review it and fill in any [bracketed] details like your member ID and claim number (they're on your EOB or insurance card), then send it to your insurer's appeals department yourself.",
           500,
           { letter: { pdfUrl: `${API_BASE}/letters/${data.storage_key}`, reference: data.reference_number } }
         );
-        await robinSay("Want me to send it to your insurer?", 700);
+        await robinSay("Send it to your insurer yourself, then tap below and I'll track it with you.", 700);
         setStage("ask_send");
         return;
       } catch (e) {
@@ -711,59 +707,11 @@ function Chat({ embedded, onHome }) {
     } catch (e) { console.warn("negotiate error:", e.message); return false; }
   };
 
-  // ── Ask for the recipient contact, then deliver ───────────────────────────
-  const startSend = async (channel) => {
-    setPendingChannel(channel);
-    userSay(channel === "letter_email" ? "Email it for me" : "Fax it for me");
-    await robinSay(
-      channel === "letter_email"
-        ? "What's the billing department's email address? It's often printed on the bill, or on the hospital's billing/contact page."
-        : "What's the billing department's fax number?",
-      500
-    );
-    setStage("ask_send_contact");
-  };
-
-  // ── Deliver the letter via the backend (and log it against the negotiation) ─
-  const deliverLetter = async (channel, recipient) => {
-    if (!lastLetter?.storageKey) {
-      await robinSay("I don't have a finished letter to send yet — let's draft one first.", 500);
-      setStage("done");
-      return;
-    }
-    await robinSay("Okay — sending that now…", 400);
-    await ensureNegotiation();  // create the negotiation first so the letter is logged against it
-    const dest = recipient.email || recipient.fax || "your provider";
-    try {
-      const fd = new FormData();
-      fd.append("storage_key", lastLetter.storageKey);
-      fd.append("reference_number", lastLetter.reference || "");
-      fd.append("channel", channel);
-      if (recipient.email) fd.append("recipient_email", recipient.email);
-      if (recipient.fax) fd.append("recipient_fax", recipient.fax);
-      if (recipient.name) fd.append("recipient_name", recipient.name);
-      if (recipient.address) fd.append("recipient_address", recipient.address);
-      const resp = await apiFetch(`${API_BASE}/cases/${caseId}/send-letter`, { method: "POST", body: fd });
-      const data = await resp.json().catch(() => ({}));
-      if (!resp.ok) throw new Error(`send-letter ${resp.status}`);
-      const ref = data.reference_number || lastLetter.reference;
-      if (data.delivery_status === "sent") {
-        await robinSay(`Done — I've sent your letter to ${dest} (reference ${ref}) and I'm now tracking your case. Providers usually respond within 2–4 weeks; come back and tell me what they say and I'll draft your next move.`, 700);
-      } else {
-        await robinSay(`I've logged your letter (reference ${ref}) and started tracking your case. Automatic delivery isn't switched on here yet, so please send the PDF above to ${dest} yourself for now — then check back and I'll help with their response.`, 800);
-      }
-    } catch (e) {
-      console.warn("send-letter failed:", e.message);
-      await robinSay("I couldn't send it automatically just now. Please download the PDF above and send it to your provider — I've still got your case and can help with their response.", 800);
-    }
-    setStage("done");
-  };
-
-  // ── Patient sends it themselves; still start tracking the case ────────────
+  // ── You send the letter yourself; Robin starts tracking the case ──────────
   const sendSelf = async () => {
-    userSay("I'll send it myself");
+    userSay("I've got it — track my case");
     await ensureNegotiation();
-    await robinSay("Sounds good. Download the PDF above and send it to your provider's billing department — certified mail, or email with a read receipt, so you have proof. I've started tracking your case; come back and tell me what they say and I'll draft your next move.", 800);
+    await robinSay("Sounds good. Open the PDF above and send it to your provider's billing department yourself — certified mail, or email with a read receipt, so you have proof. (You can find the billing address/email on your bill.) I've started tracking your case; come back and tell me what they say, and I'll prepare your next move.", 800);
     setStage("done");
   };
 
@@ -830,13 +778,12 @@ function Chat({ embedded, onHome }) {
       const resp = await apiFetch(`${API_BASE}/cases/${caseId}/draft-letter`, { method: "POST", body: fd });
       if (!resp.ok) throw new Error(`draft-letter ${resp.status}`);
       const data = await resp.json();
-      setLastLetter({ storageKey: data.storage_key, reference: data.reference_number });
       await robinSay(
-        "Here's your follow-up letter as a PDF — review it, then I can send it or you can.",
+        "Here's your follow-up letter as a PDF — review it, then send it to your provider yourself.",
         500,
         { letter: { pdfUrl: `${API_BASE}/letters/${data.storage_key}`, reference: data.reference_number } }
       );
-      await robinSay("Want me to send it to your provider?", 700);
+      await robinSay("Send it yourself, then tap below and I'll keep tracking your case.", 700);
       setStage("ask_send");
     } catch (e) {
       console.warn("followup draft failed:", e.message);
@@ -1209,7 +1156,7 @@ This letter was prepared with assistance from Robin (robinhealth.com), an AI-ena
     const hasEobReason = reasons.some(x => /insurer|insurance/i.test(x.summary || ""));
     if (canEliminate) {
       await robinSay(
-        "💡 Here's the most important part: your biggest opportunity is charity care. Based on your household income and the hospital's financial assistance policy, this bill could be reduced all the way to $0 — and applying is your right. That's what I'll lead with: the letter I prepare will request a full waiver under the hospital's policy.",
+        "💡 Here's the most important part: your biggest opportunity is charity care. Based on your household income and the hospital's financial assistance policy, this bill could be reduced all the way to $0 — and applying is your right. That's what we'll lead with: I'll prepare a letter, in your name, requesting a full waiver under the hospital's policy for you to send.",
         800
       );
     } else if (hasEobReason) {
@@ -1219,7 +1166,7 @@ This letter was prepared with assistance from Robin (robinhealth.com), an AI-ena
       );
     } else if (saving) {
       await robinSay(
-        `My recommendation: push for a reduction. Your charges look well above fair and typical negotiated rates, so I'll aim to bring the bill down toward ${fmt$(low)} — well below what you were billed.`,
+        `My recommendation: push for a reduction. Your charges look well above fair and typical negotiated rates, so I'll prepare a letter for you to send aiming to bring the bill down toward ${fmt$(low)} — well below what you were billed.`,
         800
       );
     } else {
@@ -1359,29 +1306,8 @@ This letter was prepared with assistance from Robin (robinhealth.com), an AI-ena
     }
 
     if (stage === "ask_send") {
-      if (lower.includes("email")) { await startSend("letter_email"); }
-      else if (lower.includes("fax")) { await startSend("letter_fax"); }
-      else if (lower.includes("myself") || lower.includes("self") || lower.includes("mail") || lower.includes("no")) { await sendSelf(); }
-      else { await robinSay("Tap one of the options above — I can email or fax it for you, or you can send it yourself.", 500); }
-      return;
-    }
-
-    if (stage === "ask_send_contact") {
-      const val = text.trim();
-      if (pendingChannel === "letter_email") {
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val)) {
-          await robinSay("That doesn't look like an email address — could you double-check it?", 500);
-          return;
-        }
-        await deliverLetter("letter_email", { email: val });
-      } else {
-        const digits = val.replace(/[^\d]/g, "");
-        if (digits.length < 7) {
-          await robinSay("Could you share the fax number, including area code?", 500);
-          return;
-        }
-        await deliverLetter("letter_fax", { fax: val });
-      }
+      // You send the letter yourself — Robin just tracks the case from here.
+      await sendSelf();
       return;
     }
 
@@ -1447,9 +1373,7 @@ This letter was prepared with assistance from Robin (robinhealth.com), an AI-ena
         setIncome(null);
         setHouseholdSize(null);
         // New bill = new case; keep the patient's name and plan, reset the rest.
-        setLastLetter(null);
         setNegotiationStarted(false);
-        setPendingChannel(null);
         setLastResponse(null);
         setInsuranceStatus(null);
         setBillFile(null);
@@ -1615,16 +1539,10 @@ This letter was prepared with assistance from Robin (robinhealth.com), an AI-ena
       {/* Send-letter options */}
       {stage === "ask_send" && (
         <div style={{ padding: "0 16px 10px", display: "flex", flexDirection: "column", gap: 8 }}>
-          {[
-            { id: "letter_email", label: "Email it to the provider for me" },
-            { id: "letter_fax", label: "Fax it for me" },
-            { id: "self", label: "I'll send it myself" },
-          ].map(o => (
-            <button key={o.id} onClick={() => (o.id === "self" ? sendSelf() : startSend(o.id))}
-              style={{ textAlign: "left", background: C.charcoal, border: `1px solid ${C.red}55`, borderRadius: 12, padding: "12px 14px", cursor: "pointer", color: C.white, fontWeight: 600, fontSize: 14 }}>
-              {o.label}
-            </button>
-          ))}
+          <button onClick={sendSelf}
+            style={{ textAlign: "left", background: C.charcoal, border: `1px solid ${C.red}55`, borderRadius: 12, padding: "12px 14px", cursor: "pointer", color: C.white, fontWeight: 600, fontSize: 14 }}>
+            Got it — I'll send it myself
+          </button>
         </div>
       )}
 
@@ -1691,8 +1609,7 @@ This letter was prepared with assistance from Robin (robinhealth.com), an AI-ena
               stage === "ask_name" ? "Type the patient's name…" :
               stage === "ask_letter_facts" ? "Tap Yes, No, or Not sure…" :
               stage === "ask_insurer" ? "Enter your insurance company's name…" :
-              stage === "ask_send" ? "Tap an option above…" :
-              stage === "ask_send_contact" ? (pendingChannel === "letter_fax" ? "Enter the fax number…" : "Enter the billing email…") :
+              stage === "ask_send" ? "Tap the button above once you've got your letter…" :
               stage === "ask_response" ? "Paste what the provider said…" :
               stage === "after_response" ? "Tap an option, or ask me anything…" :
               stage === "ask_outcome" ? "Enter the final agreed amount…" :

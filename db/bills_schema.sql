@@ -386,3 +386,28 @@ CREATE TABLE IF NOT EXISTS case_letters (
 );
 CREATE INDEX IF NOT EXISTS idx_case_letters_storage_key ON case_letters(storage_key);
 CREATE INDEX IF NOT EXISTS idx_case_letters_case ON case_letters(case_id);
+
+-- Payments (Stripe). Membership is a recurring subscription tracked on the
+-- patient; contingency fees are one-time charges tracked per row in `payments`.
+-- Card data never touches us (Stripe-hosted Checkout); we store only ids/status.
+ALTER TABLE patients
+    ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT,
+    ADD COLUMN IF NOT EXISTS membership_subscription_id TEXT,
+    ADD COLUMN IF NOT EXISTS membership_status TEXT;  -- active | past_due | canceled | NULL
+
+CREATE INDEX IF NOT EXISTS idx_patients_stripe_customer ON patients(stripe_customer_id);
+
+CREATE TABLE IF NOT EXISTS payments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    patient_id UUID REFERENCES patients(id) ON DELETE SET NULL,
+    case_id UUID REFERENCES cases(id) ON DELETE SET NULL,
+    kind TEXT NOT NULL,                 -- 'contingency' | 'membership'
+    amount_cents INT NOT NULL,
+    stripe_session_id TEXT,
+    stripe_payment_intent TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending | paid | failed | canceled
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_payments_session ON payments(stripe_session_id);
+CREATE INDEX IF NOT EXISTS idx_payments_case ON payments(case_id);

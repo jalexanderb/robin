@@ -127,7 +127,7 @@ def triage_questions(facts: TriageFacts, *, limit: int = 4) -> list[TriageQuesti
             prompt="Did your insurer deny this claim, or process it and leave you a balance?",
             field_name="claim_denied", kind="choice",
             options=["They denied it", "They paid part and left me a balance", "I'm not sure"],
-            why="A denial means we appeal the insurer; a balance means we check the charges.",
+            why="A denial means appealing your insurer; a balance means checking the charges.",
         ))
 
     if facts.received_itemized is None:
@@ -202,11 +202,11 @@ def _get_itemized_step() -> StrategyStep:
         key="get_itemized",
         title="Get the itemized bill",
         detail=(
-            "Your bill looks like a summary. We request a fully itemized bill "
-            "(every charge with its CPT/HCPCS/revenue codes) and ask that "
-            "collection activity pause while it's produced. This is the "
-            "foundation -- most billing errors only show up once charges are "
-            "itemized."
+            "Your bill looks like a summary. Robin prepares a request for you to "
+            "send for a fully itemized bill (every charge with its "
+            "CPT/HCPCS/revenue codes), asking that collection activity pause "
+            "while it's produced. This is the foundation -- most billing errors "
+            "only show up once charges are itemized."
         ),
         leverage=["Itemized-bill request"],
         needs_from_user=["the bill you already received"],
@@ -232,9 +232,10 @@ def _dispute_letter_step(leverage: list[str]) -> StrategyStep:
         key="dispute_letter",
         title="Send the dispute letter",
         detail=(
-            "Robin drafts a firm, professional letter to the billing department "
-            "laying out each error and request, and you review and approve it "
-            "before anything is sent."
+            "Robin writes a firm, professional letter for you -- in your name, "
+            "laying out each error and request -- which you review, then send to "
+            "the billing department yourself (certified mail or email gives you a "
+            "paper trail)."
         ),
         leverage=leverage,
     )
@@ -246,8 +247,8 @@ def _charity_step() -> StrategyStep:
         title="Apply for financial assistance (charity care)",
         detail=(
             "Many patients qualify for free or steeply reduced care without "
-            "realizing it. We check the hospital's policy against your household "
-            "income and help you apply."
+            "realizing it. Robin checks the hospital's policy against your "
+            "household income and prepares the application for you to submit."
         ),
         leverage=["Hospital Financial Assistance Policy", "501(r) charity care"],
         needs_from_user=["rough household income", "household size", "proof of income (pay stub or tax return)"],
@@ -259,9 +260,9 @@ def _insurer_appeal_step() -> StrategyStep:
         key="insurer_appeal",
         title="Appeal the denial with your insurer",
         detail=(
-            "We file a formal internal appeal asserting your plan benefits and "
-            "appeal rights; if it's upheld, you're entitled to an independent "
-            "external review."
+            "Robin prepares a formal internal appeal letter for you to file, "
+            "asserting your plan benefits and appeal rights; if the denial is "
+            "upheld, you're entitled to an independent external review."
         ),
         leverage=["Plan benefits", "45 CFR 147.136 internal appeal & external review"],
         needs_from_user=["your EOB / denial letter", "member ID and claim number"],
@@ -273,9 +274,10 @@ def _settlement_step() -> StrategyStep:
         key="settlement",
         title="Negotiate the remaining balance",
         detail=(
-            "For whatever's left, we negotiate -- a one-time lump-sum settlement "
-            "(providers often accept a fraction) or an interest-free payment plan "
-            "that fits your budget."
+            "For whatever's left, Robin gives you a settlement offer and a "
+            "call script -- aim for a one-time lump sum (providers often accept "
+            "a fraction) or an interest-free payment plan that fits your budget, "
+            "which you propose to them directly."
         ),
         leverage=["Cash-price / settlement"],
     )
@@ -288,9 +290,9 @@ def _nsa_step(emergency: bool | None) -> StrategyStep:
         title="Invoke your No Surprises Act protection",
         detail=(
             f"For {basis}, federal law generally limits you to your in-network "
-            "cost-sharing. We notify both the provider and your insurer to "
-            "reprocess the balance at the in-network rate and remove the surprise "
-            "charges."
+            "cost-sharing. Robin prepares a notice for you to send the provider "
+            "and your insurer, requesting they reprocess the balance at the "
+            "in-network rate and remove the surprise charges."
         ),
         leverage=["No Surprises Act (45 CFR Part 149)"],
         needs_from_user=["your EOB", "anything you signed at check-in"],
@@ -302,9 +304,10 @@ def _escalation_step() -> StrategyStep:
         key="escalate",
         title="Escalate if they don't fix it",
         detail=(
-            "If the provider or insurer doesn't resolve it, we escalate -- the "
-            "CMS No Surprises Help Desk, your state insurance regulator, or your "
-            "state attorney general, as appropriate."
+            "If the provider or insurer doesn't resolve it, Robin shows you how "
+            "to escalate -- and prepares the complaint -- to the CMS No Surprises "
+            "Help Desk, your state insurance regulator, or your state attorney "
+            "general, as appropriate."
         ),
         leverage=["Regulatory escalation"],
     )
@@ -319,8 +322,8 @@ _HEADLINES = {
     ARCH_INSURED_DENIAL: "Your insurer denied this claim, so the move is to appeal them (internal review, then external) rather than negotiate the provider.",
     ARCH_EMERGENCY_UNINSURED: "For emergency care while uninsured, your strongest paths are charity care and correcting the charges.",
     ARCH_CHARITY_CARE: "You likely qualify for the hospital's financial assistance -- that can wipe out or sharply cut this bill.",
-    ARCH_SELF_PAY: "As a self-pay patient, we get the charges corrected and negotiated down to a fair cash price.",
-    ARCH_INSURED_BALANCE: "Insurance processed this, but the balance looks high -- we anchor to what your plan allows and check the charges.",
+    ARCH_SELF_PAY: "As a self-pay patient, you can get the charges corrected and negotiate down to a fair cash price -- Robin gives you what you need to do it.",
+    ARCH_INSURED_BALANCE: "Insurance processed this, but the balance looks high -- Robin helps you anchor to what your plan allows and check the charges.",
     ARCH_GENERAL: "Here's the plan to push back on this bill.",
 }
 

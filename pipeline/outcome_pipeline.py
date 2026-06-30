@@ -1413,46 +1413,45 @@ def _fetch_negotiation_by_id(negotiation_id: str) -> "NegotiationSummary | None"
 # The canonical fee terms text shown to patients. Versioned so we can
 # tell exactly what a patient agreed to even if terms change later.
 # This is the authoritative copy; the API endpoint returns it verbatim.
-FEE_TERMS_VERSION = "v2.0"
+FEE_TERMS_VERSION = "v2.1"
 
-FEE_TERMS_TEXT = """RobinHealth Fee Agreement — Version 2.0
+FEE_TERMS_TEXT = """RobinHealth Fee Agreement — Version 2.1
 
 WHAT WE DO
-RobinHealth analyzes your medical bills and, if you choose to proceed,
-works on your behalf — through financial-assistance applications,
-error corrections, insurance appeals, and negotiation — to reduce what
-you owe.
+RobinHealth analyzes your medical bills and prepares the materials you need to
+push back yourself — a tailored strategy, dispute and appeal letters, and
+phone-call scripts. You send the letters and make the calls; we give you the
+information and the words to use. We do not contact your provider or insurer
+for you.
 
 HOW YOU PAY — YOU CHOOSE
-You'll never pay more than $50 a month, or 20% of what we save you.
-Pick whichever is cheaper for you:
+You'll never pay more than $50 a month, or 20% of what you save using our
+materials. Pick whichever is cheaper for you:
 
-  1) Pay-per-win — 20% of the amount we save you, capped at $1,000 per
-     bill. No upfront cost. If we don't save you anything, you pay
-     nothing.
+  1) Pay-per-win — 20% of the amount your bill is reduced, capped at $1,000
+     per bill. No upfront cost. If your bill isn't reduced, you pay nothing.
 
-  2) Membership — a flat $50 per month, and we take 0% of your savings,
-     no matter how large. You can cancel any time.
+  2) Membership — a flat $50 per month, and we take 0% of your savings, no
+     matter how large. You can cancel any time.
 
-Example (pay-per-win): If your bill is $5,000 and we get it reduced to
-$2,000, you save $3,000. Our fee is 20% of $3,000 = $600. On a much
-larger bill the fee is still capped at $1,000. On Membership, your
-savings fee on that same bill is $0 — you'd just pay your $50/month.
+Example (pay-per-win): If your bill is $5,000 and it's reduced to $2,000, you
+save $3,000. Our fee is 20% of $3,000 = $600. On a much larger bill the fee is
+still capped at $1,000. On Membership, your savings fee on that same bill is
+$0 — you'd just pay your $50/month.
 
-IF WE DON'T SAVE YOU ANYTHING
-On pay-per-win you owe us nothing — our fee only applies when we achieve
-a real, documented reduction. On Membership, the flat $50/month applies
-whether or not we save you money.
+IF YOUR BILL ISN'T REDUCED
+On pay-per-win you owe us nothing — our fee only applies when there's a real,
+documented reduction. On Membership, the flat $50/month applies whether or not
+your bill goes down.
 
-YOUR AUTHORIZATION
-By accepting these terms, you authorize RobinHealth to communicate with
-your healthcare provider and, where applicable, your insurer on your
-behalf regarding this bill. You remain responsible for reviewing any
-agreements we reach and confirming them before payment.
+WHAT YOU AGREE TO
+You're using RobinHealth's analysis and prepared materials to dispute your own
+bill. You send any letters and make any calls yourself, and you're responsible
+for reviewing everything before sending and for confirming any agreement
+before you pay your provider. You can withdraw at any time before you send,
+with no fee owed.
 
-To proceed, you must confirm that you have read and understood these
-terms. You can withdraw at any time before an agreement is reached, with
-no fee owed.
+To proceed, you must confirm that you have read and understood these terms.
 """
 
 
