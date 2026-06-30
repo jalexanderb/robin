@@ -22,3 +22,10 @@ pypdf==4.3.1
 
 # HTML parsing
 beautifulsoup4==4.12.3
+
+# Object storage (S3-compatible) backend for blobs — only used when
+# STORAGE_BACKEND=s3; imported lazily so the local/dev path doesn't need it.
+boto3==1.34.131
+
+# Test-only: mock S3 for the storage tests (`pip install moto` in CI/local).
+# moto==5.0.*

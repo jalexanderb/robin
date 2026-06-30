@@ -52,6 +52,20 @@ Build from the repo root `Dockerfile`. Required environment variables:
 | `LLM_MODEL` | `claude-opus-4-8` (default) — or `claude-sonnet-4-6` to cut cost |
 | `API_KEY` | optional bearer token; if set, all requests must send it |
 | `CORS_ORIGINS` | the portal's origin, e.g. `https://your-portal.vercel.app` |
+| `RETENTION_DAYS` | retention window for the purge sweep (default 365); run `python retention.py` from cron |
+| `STORAGE_BACKEND` | `local` (default) or `s3` — use `s3` in production for durable, encrypted blob storage |
+| `S3_BUCKET` | required when `STORAGE_BACKEND=s3`: the private bucket name |
+| `AWS_REGION` | bucket region, e.g. `us-east-1` |
+| `S3_ENDPOINT_URL` | optional; set for non-AWS S3 (Cloudflare R2 / Backblaze B2 / MinIO) |
+| `S3_SSE` | server-side encryption: `AES256` (default) or `aws:kms` |
+| `S3_SSE_KMS_KEY_ID` | KMS key id/arn, when `S3_SSE=aws:kms` |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | S3 credentials (or use an instance/role) |
+
+For `s3`: create a **private** bucket (block all public access), enable
+default encryption, scope an IAM user/policy to just that bucket, and
+(optionally) add a lifecycle rule mirroring `RETENTION_DAYS`. Blobs are
+content-addressed and written with server-side encryption; no app/schema/
+frontend changes are needed to switch backends.
 
 Open-weight alternative: set `LLM_PROVIDER=openai_compatible` + `LLM_BASE_URL`
 + `LLM_MODEL` instead of the Anthropic vars (see `LLM_CONFIG.md`).
