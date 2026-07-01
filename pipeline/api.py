@@ -226,6 +226,48 @@ def _build_chat_prompt(message: str, context_json: Optional[str]) -> str:
     )
 
 
+def _parse_chat_history(
+    history_json: Optional[str], max_turns: int = 10, max_chars: int = 4000
+) -> list[dict]:
+    """
+    Parse the front-end's prior-turns JSON into a clean [{role, content}] list
+    for llm_client (so the chat has conversation memory). Defensive: bad input
+    -> []. Normalized so it's safe even for strict message APIs (Anthropic):
+    drops leading assistant turns (messages must start with a user turn) and
+    merges consecutive same-role turns. Capped to the last `max_turns` turns and
+    `max_chars` per turn to bound prompt size / abuse.
+    """
+    if not history_json:
+        return []
+    import json
+    try:
+        raw = json.loads(history_json)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(raw, list):
+        return []
+
+    cleaned: list[dict] = []
+    for item in raw[-max_turns:]:
+        if not isinstance(item, dict):
+            continue
+        role = item.get("role")
+        content = item.get("content")
+        if role not in ("user", "assistant") or not isinstance(content, str) or not content.strip():
+            continue
+        cleaned.append({"role": role, "content": content.strip()[:max_chars]})
+
+    normalized: list[dict] = []
+    for turn in cleaned:
+        if not normalized and turn["role"] != "user":
+            continue  # must start with a user turn
+        if normalized and normalized[-1]["role"] == turn["role"]:
+            normalized[-1]["content"] += "\n\n" + turn["content"]  # merge consecutive
+        else:
+            normalized.append(dict(turn))
+    return normalized
+
+
 def _case_context_text(case_id: str) -> str:
     """
     Build an AUTHORITATIVE, server-side context block for a case so Robin can
@@ -618,6 +660,7 @@ async def chat(
     message: str = Form(...),
     context_json: Optional[str] = Form(None),
     case_id: Optional[str] = Form(None),
+    history_json: Optional[str] = Form(None),
 ) -> JSONResponse:
     """
     Free-form patient Q&A, answered by the configured LLM (Claude by default).
@@ -652,9 +695,10 @@ async def chat(
         case_ctx = _case_context_text(case_id)
         if case_ctx:
             prompt = f"{case_ctx}\n\n{prompt}"
+    history = _parse_chat_history(history_json)
     try:
         reply = llm_client.complete(
-            prompt, system=ROBIN_CHAT_SYSTEM, max_tokens=700,
+            prompt, system=ROBIN_CHAT_SYSTEM, max_tokens=4000, history=history,
         ).strip()
     except Exception as exc:  # noqa: BLE001 -- patient UX must never hard-fail here
         logger.warning("request_id=%s chat LLM error: %s", request_id, exc)

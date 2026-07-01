@@ -471,6 +471,14 @@ function Chat({ embedded, onHome }) {
       // (the specific findings, the strategy, negotiation status) and answer
       // about THIS bill concretely.
       if (caseId) fd.append("case_id", caseId);
+      // Prior conversation turns so Robin has memory across messages. `messages`
+      // here excludes the turn just sent (state hasn't flushed yet), so it's
+      // exactly the earlier history; the backend caps/normalizes it.
+      const history = messages
+        .filter(m => (m.from === "user" || m.from === "robin") && typeof m.text === "string" && m.text.trim())
+        .slice(-10)
+        .map(m => ({ role: m.from === "robin" ? "assistant" : "user", content: m.text }));
+      if (history.length) fd.append("history_json", JSON.stringify(history));
       const resp = await apiFetch(`${API_BASE}/chat`, { method: "POST", body: fd });
       const data = await resp.json();
       setTyping(false);

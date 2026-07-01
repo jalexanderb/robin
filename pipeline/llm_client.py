@@ -162,6 +162,7 @@ def complete(
     system: str | None = None,
     max_tokens: int = 2000,
     temperature: float = 0.0,
+    history: list[dict] | None = None,
 ) -> str:
     """
     Send one user turn (optionally with images) to the configured LLM
@@ -174,10 +175,14 @@ def complete(
 
     images is a list of (raw_bytes, media_type) tuples, e.g.
     [(png_bytes, "image/png")].
+
+    history is an optional list of prior turns as {"role": "user"|"assistant",
+    "content": str}, inserted before the current turn so the model has
+    conversation context (used by /chat for a coherent multi-turn conversation).
     """
     if _provider() == "anthropic":
-        return _complete_anthropic(prompt, images, system, max_tokens, temperature)
-    return _complete_openai_compatible(prompt, images, system, max_tokens, temperature)
+        return _complete_anthropic(prompt, images, system, max_tokens, temperature, history)
+    return _complete_openai_compatible(prompt, images, system, max_tokens, temperature, history)
 
 
 def _complete_openai_compatible(
@@ -186,6 +191,7 @@ def _complete_openai_compatible(
     system: str | None,
     max_tokens: int,
     temperature: float,
+    history: list[dict] | None = None,
 ) -> str:
     """
     OpenAI-compatible chat-completions shape. Images are encoded as
@@ -207,6 +213,8 @@ def _complete_openai_compatible(
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
+    if history:
+        messages.extend(history)
     messages.append({"role": "user", "content": content})
 
     headers = {"Content-Type": "application/json"}
@@ -261,6 +269,7 @@ def _complete_anthropic(
     system: str | None,
     max_tokens: int,
     temperature: float,
+    history: list[dict] | None = None,
 ) -> str:
     """
     Anthropic Messages API, free-text response. temperature is accepted for
@@ -269,7 +278,7 @@ def _complete_anthropic(
     Opus 4.7+/Fable family reject temperature/top_p/top_k with a 400. Steer
     determinism via the prompt instead.
     """
-    data = _anthropic_request(prompt, images, system, max_tokens)
+    data = _anthropic_request(prompt, images, system, max_tokens, history=history)
     blocks = data["content"]
     return "".join(block["text"] for block in blocks if block.get("type") == "text")
 
@@ -281,6 +290,7 @@ def _anthropic_request(
     max_tokens: int,
     tools: list[dict] | None = None,
     tool_choice: dict | None = None,
+    history: list[dict] | None = None,
 ) -> dict:
     """
     Build and send one Anthropic Messages API request (POST
@@ -315,7 +325,7 @@ def _anthropic_request(
     body: dict = {
         "model": _model(),
         "max_tokens": max_tokens,
-        "messages": [{"role": "user", "content": content}],
+        "messages": (list(history) if history else []) + [{"role": "user", "content": content}],
     }
     if system:
         # Top-level field, not a message -- the one shape difference most
